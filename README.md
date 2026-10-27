@@ -1,0 +1,765 @@
+# Vicold.MIHome
+
+米家设备的 Windows 桌面控制端，技术栈为 **C++ / Win32 + WebView2 + Vue 3**。
+与同仓库的 Python 版 MiHome-Windows 完全独立：不依赖 Python、不依赖 mijiaAPI，
+协议层用纯 C++ 重新实现。
+
+## 技术栈
+
+| 层 | 实现 |
+|---|---|
+| 宿主 | C++20 + Win32（无边框窗口、DPI 感知、任务队列、JS 桥） |
+| 界面 | Vue 3 + Vite + TypeScript，运行在 WebView2 里 |
+| HTTP | WinHTTP（手工 cookie，gzip 解压由 WinHTTP 处理） |
+| 加密 | Windows CNG（bcrypt）做 SHA1/SHA256，RC4 自实现 |
+| JSON | nlohmann/json（单头文件） |
+| 米家协议 | `src/proto/mijia.cpp`，扫码登录 / token 刷新 / 设备 / 规格 / 属性 / 动作 / 场景 |
+
+## 构建
+
+前置：VS 2022/2026（MSVC）、CMake、Node.js、WebView2 Runtime（Win11 自带）。
+
+```powershell
+.\build.cmd
+```
+
+脚本会：装前端依赖 → `vite build` → 准备 MSVC 环境 → CMake(Ninja) 编译 → 把
+`web/dist` 复制到 `build\web\dist`。产物是 `build\Vicold.MIHome.exe`（依赖同目录下的
+`web\` 目录，需整体分发）。
+
+> **Windows SDK 说明**：本机只装了 MSVC 没装完整 SDK，`build.cmd` 会把 NuGet 包
+> （`third_party\winsdk`）里的头文件/库/rc.exe/mt.exe 加进 INCLUDE/LIB/PATH。
+> 若已安装完整 Windows SDK，可删掉这三行相关设置。
+
+## 目录
+
+```
+src/
+├── main.cpp              入口：DPI、COM、消息循环
+├── app_window.h/.cpp    无边框窗口 + WebView2 宿主 + JS 桥 + 串行任务线程
+├── history.h/.cpp       本地历史库（环境读数时间序列，供折线图使用）
+└── proto/
+    ├── crypto.h/.cpp     base64 / SHA1 / SHA256 / RC4 / 签名
+    ├── http.h/.cpp       WinHTTP 封装
+    ├── images.h/.cpp     设备产品图抓取缓存（home.miot-spec.com 的 og:image）
+    └── mijia.h/.cpp      米家云端协议（登录、设备、规格、属性、动作、场景）
+web/                      Vue 3 前端
+│   ├── components/PowerToggle.vue  通用扁平电源开关（sm/md/lg，绿/紫）
+│   ├── lib/deviceImage.ts         设备产品图（model → 本地文件名，逐张点亮）
+│   └── lib/edgeResize.ts 窗口边缘缩放热区判定（n/s/e/w/四角）
+third_party/nlohmann/     json.hpp
+third_party/winsdk/       NuGet 下载的 Windows SDK（不入库）
+```
+
+## 环境页：仪表板 + 控制中心
+
+环境页是**两栏一体**布局（`EnvironmentView.vue`）：
+
+```
+┌──────────────────────────────┬──────────────────────┐
+│ 仪表板（只读，看数据）        │ 控制中心（改设备）    │
+│  · 全屋空气卡片（自适应仪表） │  · 房间筛选页签      │
+│  · 传感器钉子板（自己挑读数） │  · 吸顶灯 / 空调      │
+│  · 房间卡片矩阵              │    物理通断开关      │
+│  · 指标历史曲线              │  · 展开可调参数      │
+└──────────────────────────────┴──────────────────────┘
+```
+
+≤1180px 时退化为单栏。两栏共用同一个房间筛选状态 `envRoomFilter`：
+在控制中心点房间，仪表板同步聚焦；反之亦然。
+
+### 全屋空气卡片：混搭仪表 + 按宽度分档
+
+卡片里**不用同一种仪表**，温湿度和污染物各用一种形式：
+
+| 区域 | 组件 | 形式 |
+|---|---|---|
+| 温湿度 | `ArcGauge.vue` | 240° 大弧表盘，SVG `viewBox` + `width:100%`，指针悬浮在读数盘外 |
+| 污染物 + 空气质量 | `MetricTile.vue` | 大数值 + 四段色刻度条（优/良/轻度污染/更差）+ 迷你趋势线 |
+
+卡片宽度用 `ResizeObserver` 实测，分三档切换排布（`layout` 计算属性）：
+
+| 档位 | 卡片宽度 | 排布 |
+|---|---|---|
+| `stack` | < 520px | 上下堆叠，表盘限宽 280px 居中，指标块 2 列 |
+| `dual` | 520 ~ 1000px | 上下两块，表盘并排，指标块 3 列 |
+| `wide` | > 1000px | **左右分栏**：温湿度在左，指标块在右 |
+
+⚠️ **旧版用固定像素表盘（`size=150` / `size=104`）是空白问题的根源**：
+窗口拉宽后格子变宽、表盘不变宽，两侧就空一大片。改成 `width:100%` 的 SVG +
+`auto-fit` 栅格后，内容宽度始终填满。
+
+### 弧形表盘（`ArcGauge.vue`）
+
+240° 弧，缺口朝下。三条硬约束：
+
+1. **指针线段画成固定「朝上」的形状**，整组靠 CSS `rotate` 转到目标角度 ——
+   端点若也用 `polar(angle)` 算，会被转两次，指针指错方向。
+2. **读数放在独立圆盘里**（`FACE_R=33`），指针从盘缘往外伸（`NEEDLE_IN = FACE_R+1`），
+   两者不打架；旧版指针从圆心射出，正好压住数字。
+3. 刻度数字（最小/中间/最大）放在弧**外侧**，别放内侧 —— 内侧会撞读数盘。
+4. **表盘下方的评价小字（`.nt`）要走 `--c` 跟着档位变色**，不能写死 `--text-3`：
+   灰色的「偏干」看不出严重程度，用户只能靠数字自己判断。
+5. **中间刻度数字必须传量程中点**：`0°`（弧顶）正是 `frac = 0.5` 的位置，
+   传舒适区中点（温度 22）会让数字比指针实际位置低 2°。舒适区靠 `band` 弧标绿，
+   不要拿中间刻度去表达它。
+
+温度基准量程 **0 ~ 40 °C**（`METRIC_RANGE.t`）。上限 40 而不是 35：夏天没开空调的房间、
+空调回风口常年 30 大几，卡在 35 会让指针顶死、进度条满格，看不出还剩多少余量。
+
+### 越界时动态扩量程（`env.ts::fitRange`）
+
+固定量程一定会被真实数据打穿：冬天没暖气的房间零下、西晒房间 42 °C、刚装修完甲醛爆表、
+做饭时 PM2.5 四百多。原先的做法是 `Math.min(100, Math.max(0, …))` 直接夹住 ——
+指针顶在端点、进度条满格，**「超出 5 度」和「刚好 40 度」画得一模一样**。
+
+`fitRange(key, value)` 只扩**越界的那一端**，另一侧不动（否则刻度整体漂移，
+同一读数今天在最左边、明天在中间）：
+
+| 读数 | 量程 | 指针位置 |
+|---|---|---|
+| 25 °C | 0 ~ 40 | 62% |
+| 40.05 °C | 0 ~ 45 | 89% |
+| 43.6 °C | 0 ~ 50 | 87% |
+| −0.3 °C | −5 ~ 40 | 10% |
+| 甲醛 0.203 | 0 ~ 0.25 | 81% |
+
+- 步长取 **1 / 2 / 5 的十倍数**（`niceStep`，约等于基准跨度的 1/8），
+  扩出来永远是 45、50、0.25 这种整数刻度，不会是 42.7；
+- 扩展量多留**半个步长**，指针不会停在离端点 1px 的位置；
+- 读数回到基准区间内时量程自动收回去，不用手动重置。
+
+「全屋空气」表盘和传感器钉子板都走这一个函数，所以同一读数在两处的指针位置一致。
+
+### 温湿度舒适度：档位必须带方向
+
+`env.ts::comfortOf(key, v)` 返回 `{ level, dir }`，`comfortText()` 给出文案与配色。
+
+⚠️ **只返回「偏离多远」是错的**。温湿度是双侧区间（湿度 40~60%）：
+
+- 30% 和 70% 偏离舒适区的距离可能一样，但一个是**干**、一个是**湿**；
+- 早先只算距离档位，文案又一律按「湿」取词，于是 **30% 被显示成「很湿」**；
+- 中间两档的文案其实早就自相矛盾（1 档写「略干」、2 档写「偏湿」），
+  说明方向从来没进过判定。
+
+文案表按方向分开：
+
+| 档位 | 温度·偏低 | 温度·偏高 | 湿度·偏低 | 湿度·偏高 |
+|---|---|---|---|---|
+| 0 | 舒适 | 舒适 | 舒适 | 舒适 |
+| 1 | 微凉 | 微热 | 略干 | 略湿 |
+| 2 | 偏冷 | 偏热 | 偏干 | 偏湿 |
+| 3 | 很冷 | 很热 | 很干 | 很湿 |
+
+档位分界用**每个指标自己的绝对距离**（`MetricDef.tiers`），不按区间宽度归一化：
+
+- 温度 `tiers: [1.5, 4]` → 17°C 微凉 / 15°C 偏冷 / 13°C 很冷
+- 湿度 `tiers: [3, 10]` → 38% 略干 / 30% 偏干 / 25% 很干
+
+按宽度归一化会让湿度过于宽松（65% 就被叫「潮湿」）。
+湿度阈值与 `SensorPanel` 的 30 / 40 / 60 / 70 对齐，两处口径一致。
+
+### 指标块（`MetricTile.vue`）
+
+- 刻度条按 `good`/`ok`/`bad` 分四段着色，当前值位置有发光游标 + 白色刻线。
+- **刻度数字太近就跳过中间那个**（分位数差 < 12%）：甲醛的 0.08 / 0.1 只差 10%，
+  叠在一起根本看不清；量程两端始终保留。
+- 小数位多时**去掉多余的 0**（`0.300 → 0.3`，`2.000 → 2`）。
+- 迷你趋势线用 `preserveAspectRatio="none"` + `vector-effect="non-scaling-stroke"`，
+  既铺满宽度又不会被拉变形。
+
+### 传感器钉子板（`PinTile.vue`）
+
+「全屋空气」是自动聚合出来的代表值；钉子板是**用户自己挑**的读数：
+任意设备上的温度 / 湿度 / PM / 甲醛 / CO₂ 都能钉到环境页，逐条选样式、拖动排序。
+
+| 关注点 | 位置 |
+|---|---|
+| 可钉的读数 | `lib/env.ts::buildPinCandidates` |
+| 钉子（id + 样式 + 顺序） | `lib/sensorPins.ts`（localStorage `vicold.sensorPins`，按 homeId） |
+| 渲染（两种样式） | `components/PinTile.vue` |
+| 挑选面板 / 拖拽 | `components/EnvironmentView.vue` |
+
+**候选判据是「现在真的读到了什么」，不是设备品类**：这样净化器、空气监测仪、
+空调回风口上的探头都能钉，新增品类不用改白名单。只提供温湿度的设备例外 ——
+必须过 `isEnvSensor()`（净水器那类 `temperature` 读的是水路温度，
+属性跟真探头完全同形，只能靠名字排除）。
+
+两种样式的口径**必须共用同一份**，否则切样式会让读数看起来变了：
+
+- 量程 `METRIC_RANGE`（`lib/env.ts`）—— 指针角度和进度条占比都从它算；
+- 配色与评价词 `metricState()` —— 温湿度走 `comfortText`（带方向），污染物走 `levelOf` 档位。
+
+钉子 id 是 `${did}:${key}`，所以同一台设备的温、湿是两条独立的钉子。
+样式 `gauge | bar` 存在每条钉子上，表头的「样式」开关是**整体改**
+（全部一致才高亮，混用时不亮），卡片右下角的两个小图标是**单条改**。
+
+**卡片底部的趋势曲线**（`PinTile.vue` 的 `spark`，两种样式都有）。数据来自
+`trendOf(did, key, 24)`，即本机采样的最近 24 小时；连一个点都没有就不画，
+只留一行浅色「近 24 小时无采样」。曲线下面**只打三个时间刻度**（起点 / 中点 / 终点）：
+
+- 文案只留 `HH:MM`（卡片只有一百多像素宽，三个刻度挤一行），跨天的加「昨」区分 ——
+  24 小时窗口的左端一般落在昨天同一时刻，不标出来会让人以为是今天的数据；
+- 中点取**时间中点**而不是「数组中间那个点」，与横轴口径一致。
+
+四条绘制口径：
+
+- 横轴按**真实时间比例**，不按数组下标 —— 采样间隔不均时下标会把密集段压扁，
+  曲线形状失真；
+- 纵轴按这 24 小时自身的极值缩放，只表达相对起伏（绝对位置由上面的表盘/进度条负责）；
+- 长时间没采样才断线，门限 `max(中位间隔×5, 30 分钟)`。历史只在程序运行时采样，
+  重启就断一次，门限太紧会把曲线碎成一堆短线；
+- **碎片并回相邻段** —— 断线后只剩一两个点、或只覆盖十几分钟的那一段，在 22px 高度里
+  就是一个看不出含义的小色块，还显得「线断了又冒出个点」。
+
+⚠️ 踩过的坑：
+
+1. **`PinTile` 的样式 prop 不能叫 `style`** —— `:style` 是 Vue 的样式绑定，
+   同名 prop 会被当成内联样式吃掉，指针永远出不来。这里叫 `mode`。
+2. **挑选面板必须按设备分组**。平铺列表里一台空气监测仪就会重复 6 次设备名，
+   一屏看不完；分组后设备名只出现一次，指标做成小胶囊。
+3. **`movePin` 要传完整的钉子 id 列表**。渲染时会跳过「设备已删/切了家庭」的钉子，
+   但把这些 id 一并写回去，设备回来时钉子还在原位。
+4. 整张卡片 `draggable="true"` 直接拖 —— 钉子本身没有点击动作，
+   不需要像房间卡片那样另做把手。
+5. **趋势线上的末点圆点不能用 SVG `<circle>`** —— 曲线用了
+   `preserveAspectRatio="none"` 铺满宽度，圆会被横向拉成椭圆。改用绝对定位的 DOM
+   小圆点，坐标按 viewBox 换算成百分比（与曲线同一个变换）。
+
+### 控制中心（`ControlCenter.vue`）
+
+可调参数模型 `EnvAdjust`（`lib/env.ts`）：
+
+| kind | 表现 | 来源属性 |
+|---|---|---|
+| `range` | 滑杆 | 吸顶灯 `brightness` / `color-temperature`、空调 `target-temperature` |
+| `enum` | 按钮组 | 吸顶灯 `mode`（场景）、空调 `mode` |
+
+- 规格里没写 `value-range` 时按 `DEFAULT_RANGE` 兜底
+  （亮度 1~100、色温 2700~6500、目标温度 16~32）。
+- **枚举一律按中文标签匹配，不能按 value** —— 同品类不同型号取值完全不同。
+- 需要 `modeV`（原始枚举值）才能高亮当前模式，只存中文标签是不够的。
+
+### 两栏各自滚动（页面不滚）
+
+环境页是「左仪表板 + 右控制中心」，两栏**各自独立滚动**，外层页面不滚：
+
+| 元素 | 规则 |
+|---|---|
+| `.env-wrap`（App.vue） | `overflow: hidden` + `padding-bottom: 24px` |
+| `.env`（EnvironmentView） | `grid-template-rows: minmax(0, 1fr)` + `height: 100%` |
+| `.dash` | `overflow-y: auto` + `overscroll-behavior: contain` |
+| `.cc-scroll` | `flex: 1` + `overflow-y: auto` + `overscroll-behavior: contain` |
+
+四条硬约束，缺一条就退化成「整页滚」：
+
+1. **外层必须 `overflow: hidden`**。只要外层还能滚，滚轮事件的滚动链会冒泡到
+   最近的可滚祖先，右栏内部的 `overflow-y: auto` 永远不生效 —— 表现就是
+   「在控制中心上滚滚轮，整个页面跟着跑」。
+2. **grid 行高必须锁成 `minmax(0, 1fr)`**。`auto` 行会被内容撑高，两栏高度
+   等于内容高度，overflow 又不会触发。同时 `.env` 要 `height: 100%`。
+   （原写法 `align-items: start` 会让 item 不吃行高，`height: 100%` 失效。）
+3. **`.dash` 的子项要 `flex: none`**。它变成 flex 滚动容器后，子卡片默认
+   `flex-shrink: 1`，会被压扁成一条而不是溢出滚动。
+4. **`.cc-scroll` 要 `overflow-anchor: none`**。设备是异步拉的，内容从空变满时
+   Chromium 的滚动锚定会挑视口内的元素「保持位置」，列表一加载就跳到中段。
+
+`overscroll-behavior: contain` 负责滚到顶/底后不把滚动链继续往外传。
+窄屏（≤1180px）退化单栏时要把上述规则全部复原：`.env-wrap` 回 `auto`、
+`.env` 回 `height: auto`、`.dash` 回 `visible`，否则会出现两个小滚动区。
+
+### 房间级曲线合并（`mergeTrend`）
+
+同一房间多台传感器采样时刻不一致，合并时按 **5 分钟时间桶取平均**，
+不能按数组下标拼接（否则得到锯齿状假曲线）。
+
+### 指标键名映射（`FIELD`）
+
+指标键 `t`/`h` 对应 `RoomEnv` 字段 `temp`/`humidity`，其余同名。
+**取房间聚合值必须走 `FIELD[key]`**，直接用 `summary[d.key]` 会全部拿到 `undefined`
+（温度/湿度表盘集体显示「无数据」）。
+
+## 已定制的设备专属面板
+
+`DeviceDrawer.vue` 按 `spec_type` 的 `device:<name>` 分派到专属面板，
+没有专属面板的才走通用分组渲染。新增品类：在 `lib/spec.ts` 加判定函数
+（+ 属性取用函数），写一个 Panel，再在 DeviceDrawer 加一个 `v-else-if` 分支。
+
+| 品类 | 面板 | 主视觉 |
+|---|---|---|
+| 空调 | `AirConditionerPanel` | 温控圆环 + 模式配色 + 风速档位条 |
+| 空气净化器 | `AirPurifierPanel` | 空气质量环 + 图标模式单选 + 滤芯寿命条 |
+| 灯具 | `LightPanel` | 色温×亮度二维调光台 |
+| 温湿度计 | `SensorPanel` | 温湿度仪表盘 + CO₂ + 电池 |
+| 空气质量监测 | `AirMonitorPanel` | 污染物标尺 + 温湿度对照 |
+| 音箱 / 家庭屏 | `SpeakerPanel` | 音量盘 + 播放控制 + 开关磁贴 |
+| 开关 / 插座 | `SwitchPanel` | 扁平通道卡片 + 电源开关（横排按键） |
+| **电动窗帘** | `CurtainPanel` | 窗户示意图（两片帘布按开合度合拢）+ 开/停/关 |
+| **智能晾衣架** | `AirerPanel` | 阳台场景 + 晾衣杆随升起高度移动 |
+| **加湿器** | `HumidifierPanel` | 当前湿度环 + 目标湿度内环（双环） |
+| **净水器** | `WaterPurifierPanel` | TDS 进水/直饮水对比 + 净化率流动动画 |
+| **存在 / 人体传感器** | `PresenceSensorPanel` | 雷达波动画 + 有人/无人 + 光照度/距离 |
+| **智能鱼缸** | `FishTankPanel` | SVG 水缸场景（水草摆动 + 游鱼 + 水泵冒泡）+ 缸内水温线性标尺 |
+
+### 枚举语义陷阱（新增面板务必按中文标签匹配）
+
+同品类不同型号的**枚举数值含义不同**，写死 `value` 一定会错：
+
+| 属性 | 型号 A | 型号 B |
+|---|---|---|
+| 窗帘 `motor-control` | bjkcz.kcz4：1=打开 2=关闭 0=暂停 | xiaomi.acn012：0=打开 1=关闭 2=暂停 |
+| 晾衣架 `motor-control` | xiaomi.airer.1sfun：0=暂停 1=升高 2=降低 | ouchen.airer.m01：0=升高 1=暂停 2=降低 |
+| 净水器 `dryer` | xiaomi.waterpuri.lx40：0=关闭干衣 1=烘干 2=风干 | ouchen.airer.m01：0=待机 1=风干 2=烘干 |
+
+### 方向陷阱
+
+- **晾衣架 `target-position` 是 0=最高、100=最低**，跟窗帘的 0=全闭正好相反。
+  面板统一折算成「升起高度百分比」（`100 - value`），下发前再翻回去。
+- **净水器 `temperature` 是水路温度，不是室温** —— 标签写「出水温度」。
+- **加湿器 `water-level` 待机时读数不可信**：设备上报 0 而 `water-status` 同时报「正常」，
+  两者矛盾时按「不可信」处理（不显示 0%），缺水与否一律以 `water-status` 为准。
+- **鱼缸 `temperature` 是缸内水温，不是室温**（comment 写「鱼缸当前温度」）。
+  环境页的 `ENV_TEMP_DESC_BAD` 已用「鱼缸」二字把它排除在室温聚合之外；
+  面板里也要单独标「缸内水温」，且 uint8 量程 0~99 —— `0` 与 `>60` 都是脏值，按无数据处理。
+- **鱼缸 `water-pump` 与 `water-pump-status` 是两回事**：前者是我们写下去的开关，
+  后者是设备回报的实际工况，低水位 / 堵转 / 故障 / 未连接只能从后者读。
+
+### 动作（action）的入参
+
+`FishTankPanel` 的喂食是本项目第一个**带参数**的动作，链路：
+`emit('run-action', siid, aiid, name, params)` → `App.vue` → `invoke('action.run')`
+→ C++ `Client::run_action`，非空参数写进 `item["value"]`。
+
+- **`params` 是纯值数组，顺序由规格里 `action.in` 决定**，不是 `[{piid, value}]` 对象。
+  这与上游 Python `mijiaAPI` v5 的 `apis.py::run_action` 一致（喂食器文档示例就是 `"value": [2]`）。
+- 鱼缸「喂食」`pet-food-out` 的 `in = [5]` 指向 `feeding-measure`（出粮量 1~3 份）。
+  ⚠️ `feeding-measure` 的 `access` 是**空数组** —— 它没有读写权限，只是动作入参，
+  不能当普通属性 `prop.set`，也不会出现在「更多设置」里。
+- ⚠️ **「更多设置」排除已消费动作要按 `siid + aiid`，不能按 `name`**：
+  `buildGroups` 里 `actions[].name` 存的是 `actionLabel()` 出来的**中文标签**，
+  拿英文原名（`pet-food-out`）比对永远不匹配，会多出一个重复按钮。
+- 「更多设置」里 `no-disturb-custom` 服务的属性（灯光开关 / 水泵开关 / 挡位…）
+  是**勿扰期间要设成的值**，和面板上方的主控同名，统一加「勿扰时」前缀（`advLabel()`）。
+
+### 设备异常位图
+
+鱼缸 `exception-card.trigger-status`（siid 12）是一个位图，按 bit 从低到高：
+`1` 灯照时间过长 / `2` 水泵故障·低水位·堵转 / `3` 水泵未连接 / `4` 今日喂食份数过多 /
+`5` 滤材过期 / `6` 水温提醒。覆盖面比 `water-pump-status` 广，
+两者一起用：状态位给「当前工况」，位图给「需要用户处理的异常」。
+水泵那两位会与状态位重复，已有具体提示时跳过。
+
+
+## 开关的扁平化设计（不做拟物）
+
+**设计原则：一眼看出是开关就行，靠细节体现高级，不靠模拟实物。**
+
+之前的实现是「86 型面板 + 四角螺丝 + 内凹槽 + 透视翘板按键 + 呼吸 LED」，
+拟物痕迹太重 —— 螺丝和翘板不但没增加信息量，还让界面显得廉价。
+现在全部改成扁平卡片 + 一个明确的开关控件。
+
+### 通用开关组件（`PowerToggle.vue`）
+
+| 尺寸 | 尺寸 | 用途 |
+|---|---|---|
+| `sm` | 36×20 | 设备卡片、列表行 |
+| `md` | 44×24 | 两键 / 三键面板 |
+| `lg` | 60×32 | 单键面板、插座 |
+
+- **胶囊轨道 + 白色滑块**：这是「开关」的通用视觉语言，不需要靠外形模拟。
+- **滑块内嵌电源符号**：缩到最小尺寸也能看出是电源开关。
+- **开启态 = 绿色渐变 + 外发光**；**无线通道用紫色**，与「物理通断」直接区分。
+
+### 墙面开关面板（`SwitchPanel.vue`）
+
+- **N 键横排**：三开就三个并排、两开就两个并排，跟真实墙面面板的按键布局一致。
+  实现是 `grid-template-columns: repeat(var(--n, 1), minmax(0, 1fr))`，
+  `--n` 由 `keys.length` 注入。
+- **键数越多开关越小**（`toggleSize`：1 键 `lg` / 2~3 键 `md` / 4 键以上 `sm`），
+  保证窄卡片里也放得下不溢出。
+- **单键横排**（名称左、状态中、开关右），多键竖排（名称 → 类型 → 状态 → 开关居中）。
+- **通电态**：卡片描边转绿 + 顶部一道极淡辉光，不整块染色。
+- **每路都标清类型**：`物理通断` / `无线开关`，并附状态说明
+  （「已通电 / 电路已闭合」「无线模式 / 不驱动继电器」）。
+
+### 设备卡片上的开关（`DeviceCard.vue`）
+
+卡片右下角的开关原本是竖长的拟物翘板按键，现在换成**扁平胶囊**：
+左端电源符号 + 右端「通断 / 无线」标注，通电时整颗变绿。
+
+## 设备产品图（home.miot-spec.com）
+
+卡片左上角显示产品实拍图，取不到就回落成首字母色块（离线设备整块去色）。
+
+**为什么绕一圈**：`https://home.miot-spec.com/p/<model>` 页面里的主图是
+`og:image`，地址带 `GalaxyAccessKeyId` / `Signature` 签名，**没法按型号拼出来**，
+只能先抓页面再取；而产品页跨域、图片地址又长得没规律，网页里 fetch 会被 CORS 拦。
+所以抓取放在宿主的 `src/proto/images.cpp`：
+
+```
+model ──► GET https://home.miot-spec.com/p/<model>   （SSR 页面，300KB）
+             └─ 正则取 og:image（属性顺序两种写法都试），失败则扫全文图片地址，
+                优先 iotweb-product-center / miio.files 图床，跳过站标与拼多多广告图
+      ──► GET 图片（同一 http::Client）
+      ──► 按文件头定扩展名 → <data>/img/<model>.<png|jpg|webp|gif>（写 .tmp 再 rename）
+```
+
+前端不碰网络：`<img src="https://img.vicold.mihome/<文件名>">`，这个虚拟主机
+（`SetVirtualHostNameToFolderMapping`）指向 `<data>/img`，跟 `app.vicold.mihome`
+是同一套机制。**图片只在抓成功之后才渲染**，所以不会出现 404 被浏览器缓存的情况。
+
+| 关注点 | 位置 |
+|---|---|
+| 抓取 + 落盘 + 并发 | `src/proto/images.cpp`（8 路 worker，失败不写缓存） |
+| 桥接命令 | `image.sync`（`{models:[...]}` → `{images:{model:文件名}, missing:[...]}`） |
+| 逐张完成事件 | `image.ready`（`{model, name}`），宿主用 `WM_APP+3` 投到 UI 线程再 eval |
+| 前端状态 | `web/src/lib/deviceImage.ts`（`model → 文件名` 的响应式 Map） |
+
+⚠️ 踩过的坑：
+
+1. **`image.sync` 绝不能在串行 job 线程上跑**。宿主的 `post_job` 是单线程串行，
+   冷缓存抓 47 个型号要一两分钟，占着它会把设备开关、读数、场景全堵死。
+   现在单独起线程，并用 `shared_ptr` 持有缓存对象（窗口先关掉也不会踩空）。
+2. **产品页服务端渲染慢且抖**：实测单页 1.3s ~ 51s（中位 ~5s）。所以前端不按批等回包，
+   而是**一次把型号全交出去**，宿主边抓边推 `image.ready`，卡片逐张点亮。
+   早先按 8 个一批 + 等回包，会被批里最慢的那个页面拖住，47 个型号要 3 分钟。
+3. **产品库没有的型号**（如 `xiaomi.station.rp05`、`xiaomi.sensor_ht.new3pr`）返回 404，
+   记进 `<data>/img/.missing` 下次跳过；网络错误**不记**（断网和"没这个型号"是两回事）。
+4. **白色机身的图会消失**：小米的产品图是 168×168 透明 PNG，很多是白灯白插座，
+   纯白底托上啥也看不见。底托用色相浅渐变 + 给图片加 `drop-shadow` 描边
+   （PNG 有 alpha，阴影贴着产品轮廓走）；深色主题把底托压到 76~92% 亮度，别太刺眼。
+5. 原图四角自带 ~20% 留白，`transform: scale(1.12)` + `overflow: hidden` 才撑得满。
+
+抓取耗时写在 `<data>/img.log`（每行 `model ok page=xxxms img=xxms size=`），
+排查慢/失败直接看它。
+
+## 前端 ↔ 宿主协议
+
+前端通过 `window.chrome.webview.postMessage({id, cmd, args})` 调用，宿主
+`ExecuteScript` 回调 `window.__vicold.resolve({id, ok, data, error})`。
+
+| cmd | 说明 |
+|---|---|
+| `auth.status` / `auth.begin` / `auth.wait` / `auth.logout` | 登录态、取二维码、等待扫码 |
+| `home.list` | 家庭 + 房间（房间来自家庭信息，含没有设备的房间） |
+| `device.list` | 全部设备（自有家庭 + 共享，带 room_id / room_name） |
+| `device.spec` | 按 spec_type 取 miot-spec 规格（带磁盘缓存） |
+| `prop.get` / `prop.set` | 属性批量读 / 单属性写 |
+| `action.run` | 执行设备动作 |
+| `scene.list` / `scene.run` | 手动场景 |
+| `history.append` / `history.list` / `history.clear` | 本地历史库：环境读数时间序列 |
+| `history.backfill` | 从云端 `get_user_device_data` 补一段历史（`{did, cloud_did, key, siid, piid, from, to}` → `{ok, points}`） |
+| `app.settings` / `app.autostart` | 读设置 / 开关开机自启（`{enable}` → `{ok, autostart}`，以回读注册表为准） |
+| `image.sync` | 抓设备产品图（`{models:[...]}` → `{images:{model:文件名}, missing:[...]}`），跑在独立线程 |
+| `window.drag/minimize/maximize/close` | 无边框窗口控制（`close` 默认隐藏到托盘） |
+| `window.resize` | 从窗口边缘发起原生缩放，参数 `{dir}` = n/s/e/w/ne/nw/se/sw |
+| `window.state` | 查询当前是否已最大化（回 `{maximized}`） |
+
+宿主还会在最大化状态变化时主动推 `window.state` 事件，前端据此切换
+最大化/还原按钮的图标（拖到屏幕边缘吸附、Windows 快捷键最大化也会同步）。
+
+宿主每抓到一张产品图就推一条 `image.ready`（`{model, name}`），前端据此逐张点亮卡片；
+整批抓完仍有一次 `image.sync` 回包兜底。
+
+宿主每分钟推一次 `sample.tick` 事件，前端收到后按节奏采样环境读数——
+窗口隐藏到托盘时网页定时器会被 Chromium 节流，靠这条通道保证后台持续记录。
+
+`autostart.changed`（`{enabled}`）：托盘菜单里改了开机自启后推给前端，
+侧栏「后台常驻」开关据此同步。
+
+## 数据位置
+
+- 登录凭据：`%LOCALAPPDATA%\Vicold.MIHome\auth.json`
+- 规格缓存：`%LOCALAPPDATA%\Vicold.MIHome\spec\`
+- 历史采样：`%LOCALAPPDATA%\Vicold.MIHome\history.json`（环境读数时间序列，保留 7 天）
+- 应用设置：`%LOCALAPPDATA%\Vicold.MIHome\settings.json`（`closeToTray`）
+- 开机自启：注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的值 `Vicold.MIHome`
+- 设备产品图：`%LOCALAPPDATA%\Vicold.MIHome\img\`（`<model>.png`，`.missing` 记产品库里没有的型号）
+- WebView2 配置：`%LOCALAPPDATA%\Vicold.MIHome\WebView2\`
+- 运行日志：`%LOCALAPPDATA%\Vicold.MIHome\app.log`、抓图耗时 `img.log`
+
+## 启动崩溃：`VCRUNTIME140.dll` 访问冲突（已修复）
+
+**现象**：双击 `build\Vicold.MIHome.exe` 有时完全没反应（连窗口都不出），
+事件日志里是 `APPCRASH` / 出错模块 `VCRUNTIME140.dll` / 异常码 `0xc0000005`。
+换个启动方式（从命令行、从脚本）有时又正常 —— 所以很容易被当成「环境问题」放过去。
+
+**原因**：`pack_icon_image()` 里把 `UINT32*` 当字节指针用了：
+
+```cpp
+// ❌ 错：px 是 UINT32*，指针算术会自动 ×4，再 ×4 就偏了 4 倍
+std::memcpy(dst + row * size * 4, px.data() + y * size * 4, size * 4);
+// ✅ 对：源指针用元素下标
+std::memcpy(dst + row * size * 4, px.data() + y * size,      size * 4);
+```
+
+`y ≥ size/4` 后源地址就越出 vector 末尾去读堆外内存。越界读落在已提交页时不崩、
+跨到未提交页才崩 —— 这就是它「时好时坏、换种启动方式就正常」的全部原因。
+顺带这个 bug 还让图标取错了行（图标一直是花的，只是 16px 下看不出来）。
+
+> 教训：`memcpy` 两个指针类型不一致时（`BYTE*` + `UINT32*`），
+> 偏移量必须分别按各自元素大小算，肉眼极难发现。
+
+**启动期崩溃怎么定位**（本机没有 Windows SDK / 调试器）：
+`install_crash_logger()` 挂了顶层异常过滤器，把异常码、故障模块、模块内偏移、
+以及访问冲突的坏地址写进 `app.log`（前缀 `!! CRASH`）；`log_boot()` 在启动各阶段打点
+（`boot: wWinMain` / `com-ready` / `icon` / `hwnd` / `client` / `settings` …），
+两者一对就能把范围收到具体函数。别再靠「重启试试」了。
+
+## 已知问题
+
+**白屏/黑屏（渲染进程沙箱）**：部分安全软件会拦截 WebView2 渲染进程的沙箱，
+表现为窗口正常、导航成功、DOM 也能取到，但画面始终不刷新（连 60 行最小 WebView2
+程序也一样）。本程序因此默认给 WebView2 加了 `--no-sandbox`（只加载本地虚拟主机
+里的静态资源，不加载外部网页）。想恢复沙箱：设置环境变量 `VICOLD_SECURE=1`。
+
+其它可用环境变量：`VICOLD_WEBVIEW2_ARGS="--xxx"` 追加 Chromium 参数；
+`VICOLD_PROTO_DEBUG=1` 把原始报文（家庭、房间、设备样本）写到 `proto.log`，排查协议问题用。
+
+## 协议层踩过的坑（都已修复）
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 扫码后提示「登录未完成（缺少服务凭证）」 | 登录回调是多次 302，WinHTTP 自动跟随只保留最后一跳的响应头，`serviceToken` 挂在中间那一跳的 `Set-Cookie` 上 | 关掉自动跳转，手动逐跳跟随并收集 cookie；仍缺则再走一次 token 刷新 |
+| 设备列表报「云端返回内容无法解析」 | 带 `miot-accept-encoding: GZIP` 时，响应是 RC4 密文且内部再 gzip，C++ 侧没有 gunzip | 改发 `identity`，服务端直接回明文 JSON |
+| 房间数不对、设备全落到「未分配」 | 设备对象里**没有** room 字段，归属关系只存在于 `roomlist[].dids`（含 `.sN` 虚拟子设备） | 用 did → 房间 的反查表填充 `room_id`/`room_name`；房间列表改用 `home.list`（来自家庭信息，空房间也在） |
+| `data type not valid (code -8)` | `uid`/`id` 等字段云端有时是字符串；且 `/miotspec/prop/get` 必须包 `{"params":[...],"datasource":1}` | 加 `jstr/jll/jbool` 统一容错；按上游格式封装 prop/action 请求体 |
+
+## 标题栏交互：拖动 / 双击最大化
+
+`TitleBar.vue` 负责三件事：拖动窗口、双击切换最大化/还原、右侧窗口按钮。
+
+### ⚠️ 关键约束：原生拖拽会吞掉除 mousedown 外的所有鼠标事件
+
+拖动走的是宿主原生窗口移动（`ReleaseCapture()` + `WM_NCLBUTTONDOWN` + `HTCAPTION`）。
+系统会进入**模态移动循环并捕获鼠标**，于是 `mouseup` / `click` / `dblclick`
+**永远到不了 DOM**。实测（真实 OS 级鼠标注入）DOM 只收到：
+
+```
+mousedown@300,20 detail=1
+mousedown@300,20 detail=2
+```
+
+因此：
+
+- **双击判定必须放在 `mousedown` 阶段**，用浏览器自带的 `e.detail >= 2`
+  （第二次按下时就能拿到），**不能用 DOM 的 `dblclick` 事件**——它永远不触发。
+- 未最大化时 `mousedown` **立即**启动原生拖动，保证跟手、起点精确。
+- 已最大化时**延迟到鼠标真移动（≥4px）**才启动拖动：Windows 对「最大化窗口的
+  标题栏按下」会**先还原再拖动**，那样第一次点击就把窗口还原了，双击语义就毁了。
+
+### 最大化状态下拖动标题栏
+
+系统默认行为是「还原后停在原位」，手感很怪。宿主 `window.drag` 里改成：
+先 `SW_RESTORE`，再按比例还原光标在标题栏内的相对横向位置
+（`fx = 还原宽 / 最大宽`），最后 `SetWindowPos` 定位，然后照常进入原生拖动循环。
+效果是「还原 + 跟随光标」，与未最大化时一致。
+
+### 状态同步
+
+- 页面加载时前端调 `window.state` 同步一次真实状态；
+- 之后靠宿主在 `WM_SIZE` 里检测 `IsZoomed()` 变化并推送 `window.state` 事件
+  （`push_window_state()`，带去重），最大化按钮图标随之在「最大化方框」/
+  「还原双矩形」之间切换。
+
+### 实测结论（真机 + CDP 注入真实鼠标）
+
+| 场景 | 结果 |
+|---|---|
+| 普通态拖动 | 窗口跟手，尺寸不变 |
+| 普通态双击标题栏空白区 | 最大化，按钮图标同步 |
+| 最大化态双击标题栏 | 还原，按钮图标同步 |
+| 最大化态拖动标题栏 | 还原并跟随光标 |
+| 拖动后紧接单击 | 不误触发双击 |
+| 拖动后紧接双击 | 正常最大化 |
+| 快速三击 | 不连发翻转 |
+| 双击最大化按钮区 | 由按钮自身处理，无异常 |
+
+## 窗口边缘缩放：为什么放在前端做
+
+拖窗口边框改大小**曾经完全失效**，根因查了三层：
+
+1. **顶层窗口收不到 `WM_NCHITTEST`**。WebView2 的 Chromium 会创建一组子窗口
+   （`Chrome_WidgetWin_0/1`、`Chrome_RenderWidgetHostHWND`、
+   `Intermediate D3D Window`）铺满整个窗口，命中测试先落到最深的那个子窗口。
+2. **子类化那些子窗口也不行**。它们属于 Chromium 自己的线程，
+   `SetWindowLongPtr(GWLP_WNDPROC)` 与 `SetWindowSubclass` 一律返回
+   `ERROR_ACCESS_DENIED`（只有 `Chrome_WidgetWin_0` 恰好在本线程上，能接管）。
+3. **C++ 侧无路可走**，于是把边缘判定搬到前端。
+
+最终方案与标题栏拖动同源：
+
+```
+前端 mousemove → 判断是否落在视口最外圈 6px → 改光标
+前端 mousedown（捕获阶段）→ host.resize(dir) → 宿主 begin_native_resize(dir)
+                                                       ↓
+                        ReleaseCapture() + WM_NCLBUTTONDOWN + HT*(方向)
+                                                       ↓
+                            系统原生 SC_SIZE 模态循环（自带吸附、跟随、双向箭头）
+```
+
+- 判定与光标：`web/src/lib/edgeResize.ts`（`edgeDirAt` / `EDGE_CURSOR`），
+  安装在 `App.vue`。
+- **`mousedown` 必须用捕获阶段**（`addEventListener(..., true)`）并 `stopPropagation`，
+  否则会被标题栏的拖动逻辑抢走 —— 顶边 6px 属于标题栏。
+- **右上角是窗口按钮**（最小化/最大化/关闭占满 y=0..45），所以热区里
+  `.actions` 内的点击不触发缩放，右上角这一小块**不能**拖角缩放。
+- **最大化时禁用**：`window.state` 事件同步 `data-maximized`，
+  此时既不显示缩放光标也不响应缩放（宿主侧还有 `IsZoomed` 兜底）。
+- 宿主侧仍保留 `WM_NCHITTEST` 的边缘判定，作为「系统帧区万一露出来」的兜底。
+- `WM_NCLBUTTONDOWN` 的 `lParam` **必须带光标屏幕坐标**
+  （`MAKELPARAM(pt.x, pt.y)`），否则系统算不出抓取偏移，窗口会先跳一下。
+
+### 实测（真实 OS 级鼠标注入）
+
+| 方向 | 结果 |
+|---|---|
+| 右 / 左边缘 | 宽度随拖动变化 ✅ |
+| 下 / 上边缘 | 高度随拖动变化 ✅ |
+| 四角 | 宽高同时变化 ✅ |
+| 右上角 | 被窗口按钮占用，不响应（预期） |
+| 标题栏拖动（y=T+14） | 只移动、不缩放 ✅ |
+| 最大化态 | 四边光标全部清除 ✅ |
+
+## 环境页与历史曲线
+
+历史读数有**两个来源**，缺一不可：
+
+1. **本机采样**（`lib/history.ts`）：启动后 30 分钟内每 1 分钟、之后每 5 分钟
+   读一轮环境指标 → `history.append` 落盘 → 内存留一份供绘图。
+   ⇒ 程序没运行的时间段是空白。
+2. **云端回填**（`history.backfill`）：启动时按 `siid.piid` 向
+   `/user/get_user_device_data` 拉最近 24 小时的点并进本地库，把空白补上。
+
+> 设备规格里自带的 history 服务（杜克 HF1 的 `read-history-data`、
+> 温湿度计 3 Pro 的 `record-data` 等）在账号下返回 `-704010000`，那套读不到；
+> 但米家 App「历史记录」用的 `get_user_device_data` **能读**，见下节。
+
+- **宿主每分钟推一次 `sample.tick`**（见「系统托盘」），窗口隐藏到托盘时
+  Chromium 会节流网页定时器，由宿主驱动才能保证后台持续采样；
+- `lib/env.ts` 负责指标口径（温湿度 / PM2.5 / PM10 / 甲醛 / TVOC / CO₂ / 空气质量）、
+  房间聚合（温度取探头代表值、污染物取最差值）与设备快捷控制清单；
+- 曲线画在三个地方：环境页每个传感器可展开、`TrendSection`（温湿度计/甲醛仪/
+  净化器的抽屉面板）、设备卡片上的迷你趋势线。
+
+### 云端历史回填
+
+`POST /user/get_user_device_data`（家 `Client::history_series`），实测三条硬约束：
+
+| 约束 | 说明 |
+|---|---|
+| `key` 必须是 `siid.piid` | 写属性名（`temperature`）一律返回空数组 |
+| `time_start` 被忽略 | 只返回「`time_end` 往前最近 1000 点」，单次上限就是 1000 |
+| 想取更早只能翻页 | 把 `time_end` 递推到本页最老点 −1 秒，反复请求 |
+| 保留期 | 实测能翻到 30 天前，点间隔约 37 秒 |
+
+因此宿主按「一条曲线一次请求」翻 2~3 页就够 24 小时，由前端**串行**发多条
+（每条约 0.7 秒）。不要整批塞给宿主 —— 串行 job 线程会被堵住，设备开关跟着卡。
+
+- 只回填最近 `BACKFILL_HOURS = 24` 小时，与曲线的 24 小时时间窗对齐；
+- 两次回填之间至少间隔 6 小时（`localStorage: vicold.backfillAt`），
+  避免每次刷新页面都去打云端；
+- 虚拟子设备（`xxx.s2`）的读数挂在**父 did** 上，回填时 `cloud_did` 用父设备，
+  落盘仍按界面上的 did。
+
+### 曲线的时间轴
+
+`TrendChart.vue` 的 X 轴是**真实时间轴**，不是「按数据首尾铺满」：
+
+- 给了 `hours`（默认 24）时，时间域固定为「现在往前 N 小时」，刻度落在真实钟点
+  （`HH:mm`，跨天用 `MM-DD`），最右端单独标当前时间；
+- 缺数据的时段**留白**，不会把仅有的一小段数据拉伸铺满整幅图（那样会让人
+  误读成"完整曲线"）；
+- 采样中断超过阈值（实际间隔中位数 ×3，限制在 10~90 分钟）就**断开曲线**，
+  不把两段数据用直线连起来；
+- 左上角标出覆盖度：`最近 24 小时 · 数据自 11:55 起（2.7h / 24h）`。
+
+> ⚠️ 本机采样只能从「程序第一次运行」开始累积，过去的空白靠**云端回填**补
+> （最近 24 小时）；超过 24 小时的空白（比如一周没开机）就补不回来了 ——
+> 保留期虽然有 30 天，但曲线只画 24 小时窗口，没必要拉。
+
+## 系统托盘（后台常驻）
+
+关闭窗口时**默认最小化到托盘而不是退出**，这样环境采样才能连续跑满 24 小时。
+
+| 交互 | 行为 |
+|---|---|
+| 点标题栏 X / 关闭窗口 | 隐藏到托盘（首次弹一次气泡提示），进程继续在后台采样 |
+| 左键点击托盘图标 | 唤回主界面 |
+| 右键点击托盘图标 | 弹出菜单：显示主界面 / 关闭窗口时最小化到托盘 / 开机自动启动 / 退出 |
+
+- 「关闭窗口时最小化到托盘」开关持久化在 `%LOCALAPPDATA%\Vicold.MIHome\settings.json`
+  的 `closeToTray` 字段（默认 `true`），在托盘右键菜单里切换。
+
+### 开机自动启动
+
+要让历史曲线不断档，进程必须 24 小时活着 —— 除了关窗口不退出，还要**开机就起来**。
+
+- 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，值名固定 `Vicold.MIHome`
+  （别改：老版本写进去的会变成孤儿项），内容是 `"<exe 全路径>" --tray`。
+  用注册表而不是启动文件夹快捷方式，好处是「任务管理器 → 启动」里能直接看到并禁用。
+- `--tray` 走**静默启动**：`create()` 里跳过 `ShowWindow`，也不挂那个 1.5 秒后
+  抢前台的定时器（它会 `ShowWindow(SW_SHOW)`，等于把静默启动废掉），最后
+  `hide_to_tray(quiet=true)` 不弹气泡。
+- 开关有两个入口，状态以**宿主回读注册表**为准：
+  - 侧栏底部「后台常驻」卡片（`app.settings` 读、`app.autostart` 写）；
+  - 托盘右键菜单（勾选状态实时反映）。
+  任一处改动后宿主推 `autostart.changed`，另一处跟着更新。
+- 写注册表可能被组策略/权限挡住，所以 `app.autostart` 不管成功与否都回读真实状态；
+  前端只用回读值，不会出现「显示已开但实际没写进去」。
+- 托盘图标是**运行时自绘**的（蓝底白屋，和标题栏的品牌标记一致）：
+  在内存里拼一个标准 `.ico`（32bpp BGRA + alpha），再用
+  `LookupIconIdFromDirectoryEx` + `CreateIconFromResourceEx` 生成 `HICON`。
+
+  > ⚠️ 两个 SDK 坑：本机 NuGet 版 Windows SDK 的 `winuser.h` 被裁剪过，
+  > **没有 `ICONDIR` / `ICONDIRENTRY` 定义**（`CreateIconIndirect` 用不了），
+  > 且 `CreateIcon` 只剩 7 参数的变体（`BYTE cPlanes, BYTE cBitsPixel`，AND 在前），
+  > 实测画出来全透明。最终走 `.ico` 字节 + 标准加载 API。
+  > 另外 `CreateIconFromResourceEx` 要的是 **nID 偏移处的图像数据**，
+  > 不是整个 `.ico` 文件。
+
+## 当前进度
+
+已实现并实机验证：扫码登录、设备列表（113 台设备、按房间分组、搜索、在线状态、
+卡片开关状态批量读取）、设备规格解析（miot-spec，带磁盘缓存）、属性读取、
+深浅色主题、无边框窗口（标题栏拖动 + 双击最大化/还原 + 最大化态拖动还原跟随 +
+八方向拖边缘缩放）、
+系统托盘（关闭隐藏到托盘常驻，后台持续采样；可开**开机自启**，`--tray` 静默起机）、环境页（仪表板 + 控制中心两栏，
+含自适应「全屋空气」卡片（大弧表盘 + 分段刻度指标块，按卡片宽度三档换排布）、
+**传感器钉子板**（任意设备读数挑出来钉住，逐条切「仪表指针 / 进度条」，拖动排序且按家庭落库）、
+**设备产品图**（从 home.miot-spec.com 按型号抓 og:image 缓存到本地，卡片显示实拍图，缺失回落首字母）、
+房间卡片矩阵、多指标历史曲线（真实时间轴 + 覆盖度提示）、
+吸顶灯/空调/物理通断开关快捷控制与调参）、
+历史曲线（环境读数采样落盘 + 折线图）。
+
+**已实机验证的写入路径**（`prop.set` → 云端 → 设备回读一致）：
+
+| 设备 | 操作 | 结果 |
+|---|---|---|
+| 阳台灯 `750100524`（leshi.wy0b01） | 亮度 100→60→46 | ✅ 设备回读 46 |
+| 阳台灯 | 色温 6400→4000→6400 | ✅ 设备回读 4000 |
+| 阳台灯 | 场景 色温模式→月光（mode 0→5） | ✅ 设备回读 5，且色温行自动隐藏 |
+| 书房空调 `1131878451`（qdhkl.airc.b19m） | 模式 制冷→除湿（0→3） | ✅ 设备回读 3 |
+| 书房空调 | 目标温度 24→26→24 | ✅ 设备回读 26 |
+| 书房灯 `873189596` | 开关 on→off→on | ✅ 设备回读一致 |
+| 次卧布帘 `928075491`（bjkcz.kcz4） | 目标位置 0→70→0 | ✅ 设备回读 70 |
+| 客厅窗帘 `877630868`（xiaomi.acn012） | 运行速度 低/中/高 | ✅ 枚举按钮正确高亮 |
+| 晾衣机 `780672018`（xiaomi.airer.1sfun） | 干衣模式 关闭→风干→关闭 | ✅ 设备回读 2 |
+| 净水器 `897334498`（xiaomi.waterpuri.lx40） | 杯量 上次→2 杯→上次 | ✅ 设备回读 2 |
+| 人在传感器 `1134471551`（linp.sensor_occupy.hb01） | 灵敏度 自定义→高→自定义 | ✅ 设备回读 2 |
+
+> 加湿器 `822459842`（xiaomi.humidifier.p1200）云端所有写入均返回 `-704042011`
+> （设备离线），面板逻辑正确但无法在本机验证写入，**非代码问题**。
+
+已接好但未逐项点测：设备动作（`action.run`）、手动场景（`scene.run`）。
+
+未实现（原 Python 版有）：桌面挂件、定时任务、耗材、小爱语音、版本检查。
+
+## 重新验证登录
+
+登录凭据存在 `%LOCALAPPDATA%\Vicold.MIHome\auth.json`，删掉它再启动就会重新弹出二维码：
+
+```
+del "%LOCALAPPDATA%\Vicold.MIHome\auth.json"
+```
+

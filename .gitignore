@@ -1,0 +1,13 @@
+build/
+web/node_modules/
+web/dist/
+
+# NuGet 下载的 Windows SDK / BuildTools，体积很大，按需重新获取
+third_party/winsdk/
+
+# 本地临时
+.tmpwv/
+*.log
+
+# 调试截图（CDP 抓的界面快照，纯本地产物）
+preview/
