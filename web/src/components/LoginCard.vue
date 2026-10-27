@@ -56,7 +56,7 @@ const emit = defineEmits<{ (e: 'retry'): void }>()
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-md);
   text-align: center;
   animation: fade-up 0.28s ease both;
   position: relative;
@@ -80,8 +80,7 @@ const emit = defineEmits<{ (e: 'retry'): void }>()
   color: #fff;
   display: grid;
   place-items: center;
-  box-shadow: var(--glow-brand);
-  animation: glow-pulse 3.2s ease-in-out infinite;
+  box-shadow: var(--shadow-sm);
 }
 
 h1 {

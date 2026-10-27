@@ -1067,7 +1067,7 @@ h3::before {
 
 .fan-item.active .bars i.lit {
   background: var(--accent);
-  box-shadow: 0 0 8px rgba(23, 178, 106, 0.65);
+  box-shadow: 0 0 7px rgba(23, 178, 106, 0.3);
 }
 
 .fan-item.dim {
@@ -1165,7 +1165,7 @@ h3::before {
 
 .tile.on .tile-sw {
   background: var(--accent);
-  box-shadow: 0 0 10px rgba(23, 178, 106, 0.55);
+  box-shadow: 0 0 7px rgba(23, 178, 106, 0.28);
 }
 
 .tile.on .tile-sw i {
@@ -1199,7 +1199,7 @@ h3::before {
 
 .tile.compact.on::after {
   background: var(--accent);
-  box-shadow: 0 0 7px rgba(23, 178, 106, 0.8);
+  box-shadow: 0 0 6px rgba(23, 178, 106, 0.32);
 }
 
 /* ------------------------------------------------ 滤芯 */

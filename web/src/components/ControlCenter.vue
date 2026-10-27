@@ -383,7 +383,6 @@ function adjUnit(adj: EnvAdjust) {
   color: #fff;
   background: var(--grad-brand);
   border-color: transparent;
-  box-shadow: var(--glow-brand);
 }
 
 .cc-scroll {
@@ -589,7 +588,7 @@ function adjUnit(adj: EnvAdjust) {
   border-radius: 50%;
   background: #fff;
   border: 3px solid var(--accent);
-  box-shadow: 0 0 9px rgba(23, 178, 106, 0.5);
+  box-shadow: 0 0 6px rgba(23, 178, 106, 0.26);
   cursor: pointer;
 }
 

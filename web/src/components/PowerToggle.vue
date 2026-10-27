@@ -171,7 +171,7 @@ function onClick(e: MouseEvent) {
 .pt.on.tn-accent {
   box-shadow:
     inset 0 0 0 1px rgba(23, 178, 106, 0.55),
-    0 0 14px rgba(23, 178, 106, 0.38);
+    0 0 10px rgba(23, 178, 106, 0.2);
 }
 
 .pt.on.tn-accent .knob {
@@ -182,7 +182,7 @@ function onClick(e: MouseEvent) {
   background: linear-gradient(135deg, #a78bfa 0%, #7c5cf0 55%, #6a48e0 100%);
   box-shadow:
     inset 0 0 0 1px rgba(122, 88, 214, 0.55),
-    0 0 14px rgba(122, 88, 214, 0.38);
+    0 0 10px rgba(122, 88, 214, 0.2);
 }
 
 .pt.on.tn-violet .knob {

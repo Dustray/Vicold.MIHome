@@ -1165,7 +1165,7 @@ function sensorCurve(s: EnvSensor) {
 
 .pick-kw:focus {
   border-color: var(--brand);
-  box-shadow: var(--glow-brand-soft);
+  box-shadow: var(--ring);
 }
 
 .pick-hint {
@@ -1399,7 +1399,7 @@ function sensorCurve(s: EnvSensor) {
 
 .rcard.active {
   border-color: var(--brand);
-  box-shadow: var(--glow-brand-soft), var(--shadow-md);
+  box-shadow: var(--shadow-md);
 }
 
 .rc-top {

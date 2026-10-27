@@ -529,7 +529,7 @@ const spark = computed<{ d: string[]; lastX: number; lastY: number; ticks: strin
   bottom: 0;
   border-radius: 4px;
   background: linear-gradient(90deg, rgba(var(--c), 0.45), rgb(var(--c)));
-  box-shadow: 0 0 10px rgba(var(--c), 0.4);
+  box-shadow: 0 0 6px rgba(var(--c), 0.22);
   transition: width 0.55s var(--ease);
 }
 
@@ -541,7 +541,7 @@ const spark = computed<{ d: string[]; lastX: number; lastY: number; ticks: strin
   margin-left: -1px;
   border-radius: 1px;
   background: #fff;
-  box-shadow: 0 0 6px rgba(var(--c), 0.95);
+  box-shadow: 0 0 4px rgba(var(--c), 0.5);
   transition: left 0.55s var(--ease);
 }
 

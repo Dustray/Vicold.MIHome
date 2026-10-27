@@ -416,7 +416,7 @@ svg {
 }
 
 .hero.present .core {
-  box-shadow: 0 0 16px rgba(var(--tone), 0.45);
+  box-shadow: 0 0 10px rgba(var(--tone), 0.26);
 }
 
 /* 无人时灰色静止 */
@@ -591,7 +591,7 @@ h3::before {
   border-radius: 50%;
   background: #fff;
   border: 3px solid var(--brand);
-  box-shadow: 0 0 9px rgba(47, 109, 246, 0.5);
+  box-shadow: 0 0 6px rgba(47, 109, 246, 0.26);
   cursor: pointer;
 }
 

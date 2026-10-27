@@ -622,7 +622,7 @@ svg {
 
 .status-chip.on .dot {
   background: var(--accent);
-  box-shadow: 0 0 7px rgba(23, 178, 106, 0.85);
+  box-shadow: 0 0 6px rgba(23, 178, 106, 0.3);
   animation: breathe 1.6s ease-in-out infinite;
 }
 
@@ -753,7 +753,7 @@ h3::before {
   border-radius: 50%;
   background: #fff;
   border: 3px solid var(--brand);
-  box-shadow: 0 0 9px rgba(47, 109, 246, 0.5);
+  box-shadow: 0 0 6px rgba(47, 109, 246, 0.26);
   cursor: pointer;
 }
 
@@ -904,7 +904,7 @@ h3::before {
 
 .tile.on .t-sw {
   background: var(--accent);
-  box-shadow: 0 0 10px rgba(23, 178, 106, 0.55);
+  box-shadow: 0 0 7px rgba(23, 178, 106, 0.28);
 }
 
 .tile.on .t-sw i {

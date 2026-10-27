@@ -850,7 +850,7 @@ h3::before {
   border-radius: 50%;
   background: #fff;
   border: 3px solid var(--brand);
-  box-shadow: 0 0 9px rgba(47, 109, 246, 0.5);
+  box-shadow: 0 0 6px rgba(47, 109, 246, 0.26);
   cursor: pointer;
 }
 

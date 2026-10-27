@@ -553,7 +553,7 @@ svg {
   height: 9px;
   border-radius: 50%;
   background: rgb(var(--tone));
-  box-shadow: 0 0 8px rgba(var(--tone), 0.8);
+  box-shadow: 0 0 6px rgba(var(--tone), 0.32);
   animation: slide 2.4s linear infinite;
 }
 

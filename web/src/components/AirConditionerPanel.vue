@@ -1055,7 +1055,7 @@ h3::before {
 
 .fan-item.active .bars i.lit {
   background: var(--accent);
-  box-shadow: 0 0 8px rgba(23, 178, 106, 0.65);
+  box-shadow: 0 0 7px rgba(23, 178, 106, 0.3);
 }
 
 .fan-item:disabled {

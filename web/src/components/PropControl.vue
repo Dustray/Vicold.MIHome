@@ -226,14 +226,14 @@ function onSelect(e: Event) {
   border-radius: 50%;
   background: #fff;
   border: 3px solid var(--accent);
-  box-shadow: 0 0 10px rgba(23, 178, 106, 0.55);
+  box-shadow: 0 0 7px rgba(23, 178, 106, 0.28);
   cursor: pointer;
   transition: transform 0.15s var(--ease), box-shadow 0.15s ease;
 }
 
 .slider::-webkit-slider-thumb:hover {
   transform: scale(1.15);
-  box-shadow: 0 0 14px rgba(23, 178, 106, 0.75);
+  box-shadow: 0 0 8px rgba(23, 178, 106, 0.32);
 }
 
 .hint {

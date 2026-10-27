@@ -186,8 +186,6 @@ onUnmounted(() => {
   color: #fff;
   display: grid;
   place-items: center;
-  box-shadow: var(--glow-brand);
-  animation: glow-pulse 3.2s ease-in-out infinite;
 }
 
 .name {

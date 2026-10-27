@@ -187,7 +187,7 @@ const tagMuted = computed(() => {
 
 .device-card:hover::before {
   opacity: 1;
-  box-shadow: 0 0 12px hsl(var(--h) 80% 58% / 0.6);
+  box-shadow: 0 0 8px hsl(var(--h) 80% 58% / 0.32);
 }
 
 .device-card:hover::after {
@@ -394,7 +394,7 @@ const tagMuted = computed(() => {
   background: var(--grad-accent);
   box-shadow:
     inset 0 0 0 1px rgba(23, 178, 106, 0.5),
-    0 0 12px rgba(23, 178, 106, 0.34);
+    0 0 8px rgba(23, 178, 106, 0.2);
 }
 
 .rocker.on .rk-ico {
@@ -412,7 +412,7 @@ const tagMuted = computed(() => {
   background: linear-gradient(135deg, #a78bfa 0%, #7c5cf0 55%, #6a48e0 100%);
   box-shadow:
     inset 0 0 0 1px rgba(122, 88, 214, 0.5),
-    0 0 12px rgba(122, 88, 214, 0.34);
+    0 0 8px rgba(122, 88, 214, 0.2);
 }
 
 /* 类型标注：一眼看出通不通电 */

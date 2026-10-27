@@ -512,13 +512,13 @@ svg {
 
 .orb.sun {
   background: radial-gradient(circle, #ffd97a, #f5b53d);
-  box-shadow: 0 0 16px rgba(245, 181, 61, 0.8);
+  box-shadow: 0 0 12px rgba(245, 181, 61, 0.5);
   opacity: calc(0.25 + var(--day) * 0.75);
 }
 
 .orb.moon {
   background: radial-gradient(circle, #dbe7ff, #9fb6dd);
-  box-shadow: 0 0 12px rgba(159, 182, 221, 0.55);
+  box-shadow: 0 0 10px rgba(159, 182, 221, 0.4);
   opacity: 0.75;
 }
 
@@ -646,7 +646,7 @@ svg {
 
 .status-chip.on .dot {
   background: var(--accent);
-  box-shadow: 0 0 7px rgba(23, 178, 106, 0.85);
+  box-shadow: 0 0 6px rgba(23, 178, 106, 0.3);
   animation: breathe 1.6s ease-in-out infinite;
 }
 
@@ -794,7 +794,7 @@ h3::before {
   border-radius: 50%;
   background: #fff;
   border: 3px solid var(--brand);
-  box-shadow: 0 0 9px rgba(47, 109, 246, 0.5);
+  box-shadow: 0 0 6px rgba(47, 109, 246, 0.26);
   cursor: pointer;
 }
 

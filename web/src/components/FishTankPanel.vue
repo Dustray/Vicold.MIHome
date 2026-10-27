@@ -1004,7 +1004,7 @@ svg {
 
 .status-chip.on .dot {
   background: var(--accent);
-  box-shadow: 0 0 7px rgba(23, 178, 106, 0.85);
+  box-shadow: 0 0 6px rgba(23, 178, 106, 0.3);
   animation: breathe 1.8s ease-in-out infinite;
 }
 
@@ -1026,7 +1026,7 @@ svg {
 
 .status-chip.danger .dot {
   background: var(--danger);
-  box-shadow: 0 0 7px rgba(229, 72, 77, 0.8);
+  box-shadow: 0 0 6px rgba(229, 72, 77, 0.32);
 }
 
 /* ------------------------------------------------ 分区 */
@@ -1092,7 +1092,7 @@ h3::before {
   border-radius: 50%;
   background: #fff;
   border: 3px solid rgb(var(--tone));
-  box-shadow: 0 0 10px rgba(var(--tone), 0.55);
+  box-shadow: 0 0 7px rgba(var(--tone), 0.28);
   transform: translateY(-50%);
   transition: left 0.5s var(--ease);
 }
@@ -1216,7 +1216,7 @@ h3::before {
 .tile.on .t-check {
   background: var(--accent);
   border-color: var(--accent);
-  box-shadow: 0 0 9px rgba(23, 178, 106, 0.5);
+  box-shadow: 0 0 6px rgba(23, 178, 106, 0.26);
 }
 
 .tile:disabled {
@@ -1386,7 +1386,7 @@ h4 {
   height: 7px;
   border-radius: 50%;
   background: rgb(var(--c, 120, 170, 255));
-  box-shadow: 0 0 6px rgba(var(--c, 120, 170, 255), 0.75);
+  box-shadow: 0 0 5px rgba(var(--c, 120, 170, 255), 0.32);
   flex: none;
 }
 
@@ -1441,7 +1441,7 @@ h4 {
   border-radius: 50%;
   background: #fff;
   border: 3px solid var(--accent);
-  box-shadow: 0 0 9px rgba(23, 178, 106, 0.5);
+  box-shadow: 0 0 6px rgba(23, 178, 106, 0.26);
   cursor: pointer;
   transition: transform 0.15s var(--ease);
 }

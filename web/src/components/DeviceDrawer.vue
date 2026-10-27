@@ -371,7 +371,7 @@ const groups = computed<SpecGroup[]>(() => {
   display: flex;
   flex-direction: column;
   animation: slide-in 0.26s cubic-bezier(0.2, 0.8, 0.2, 1) both;
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-md);
 }
 
 @keyframes slide-in {
