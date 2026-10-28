@@ -1249,9 +1249,22 @@ AppWindow::json AppWindow::run_command(const std::string& cmd, const json& args)
         return json{{"ok", true}};
     }
     if (cmd == "home.list") return client_->home_list();
-    if (cmd == "device.list") return client_->devices();
+    if (cmd == "device.list") {
+        auto list = client_->devices();
+        // 家庭数解释了「为什么 home_device_list 发了 N 次」：每个家庭各发一次
+        log_line("device.list: " + std::to_string(client_->home_count()) + " homes, " +
+                 std::to_string(list.is_array() ? list.size() : 0) + " devices");
+        return list;
+    }
     if (cmd == "device.spec") return client_->device_spec(args.value("spec_type", ""));
-    if (cmd == "prop.get") return client_->get_props(args.value("items", json::array()));
+    if (cmd == "prop.get") {
+        // 记一下这一批多少项：接口单次 40 条上限，看日志就知道前端有没有把批次攒满
+        const json items = args.value("items", json::array());
+        auto ret = client_->get_props(items);
+        log_line("prop.get sent=" + std::to_string(items.size()) + " got=" +
+                 std::to_string(ret.is_array() ? ret.size() : 0));
+        return ret;
+    }
     if (cmd == "prop.set") {
         return client_->set_prop(args.value("did", ""), args.value("siid", 0), args.value("piid", 0),
                                  args.value("value", json(nullptr)));

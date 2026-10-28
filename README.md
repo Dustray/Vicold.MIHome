@@ -575,41 +575,54 @@ model ──► GET https://home.miot-spec.com/p/<model>   （SSR 页面，300KB
 米家接口有频控，被风控过的人第一件事就是想数清楚「这程序到底发了多少请求」。
 计数点只有一个：`Client::request()` 里 `http.post_form()` 那一行 —— 每次真正
 发出去的 POST 记一次，token 失效后的重发**算两次**（对端确实收到了两次，限流看的是这个数）。
-重试、`prop.get` 的 40 条分批、回填的翻页，全都自然落在里面，不需要各处手工调用。
+重试、`prop.get` 的批量分批、回填的翻页，全都自然落在里面，不需要各处手工调用。
 
-日志（`app.log`）里的两种行：
+日志（`app.log`）里的几种行：
 
 ```
-17:18:44 api calls=9 errors=0 uri=/miotspec/prop/get     # 前 30 个请求逐个记，带接口名
-17:18:44 api calls=15 errors=0 uri=/miotspec/prop/get
-17:19:11 api calls=20 errors=0 uri=/miotspec/prop/get    # 之后每 10 个记一行
+17:29:45 api calls=1 errors=0 uri=/v2/homeroom/gethome_merged   # 前 30 个请求逐个记，带接口名
+17:29:46 prop.get sent=152 got=152                              # 属性批：发了多少项、回了多少行
+17:29:46 api calls=22 errors=0 uri=/miotspec/prop/get           # 之后每 10 个记一行
 ...
-17:22:03 api total=37 errors=0 (run end)                 # 退出时记准确总数
+17:31:14 api total=8 errors=0 (run end)                         # 退出时记准确总数
+17:29:46 device.list: 3 homes, 113 devices                      # 家庭数解释了 home_device_list 发几次
 ```
 
 为什么前 30 个要逐个记：启动那几秒是唯一「想知道具体调了哪些接口」的时段。
 稳定运行后 5 分钟才一个请求，逐个记只会把日志刷满，所以退化成每 10 个一行。
+`prop.get sent/got` 是给属性批配的：**got 明显小于 sent 就是云端在截断**（见下），
+这也是判断「卡片状态为什么不显示」的第一条线索。
+
 另有一条 `app.apiStats` 命令可随时取当前值（`{total, errors, uptimeSec}`），不产生网络请求。
 
-**实测：从双击到界面上数据全部出来 = 15 次**（约 3 秒，规格 49 份已缓存、云端回填的
+**实测：从双击到界面上数据全部出来 = 7 次**（约 2 秒；规格 49 份已缓存、云端回填的
 6 小时门控未触发）：
 
 | 次数 | 接口 | 说明 |
 |---|---|---|
-| 1 | `gethome_merged` | 家庭 + 房间 |
-| 2–4 | `home_device_list` | **同一个家庭连查 3 遍**（`homes()` 被重复调用） |
+| 1 | `gethome_merged` | 家庭 + 房间（缓存后 `home.list` / `scene.list` 直接复用） |
+| 2–4 | `home_device_list` | 3 个家庭各一次，**这是必须的**，不是重复 |
 | 5 | `device_list_page` | 共享设备 |
-| 6 | `gethome_merged` | 又一次 |
-| 7–15 | `prop.get` | 9 批属性读取，见下 |
+| 6 | `prop.get` | 卡片摘要：7 个品类合并成 1 批，152 项 |
+| 7 | `prop.get` | 环境读数 33 项 |
 
-第 7–15 这 9 次是前端按品类各发一批：语音助手 / 传感器 / 空气 / 灯光 / 空调 /
-净水 / 通断开关各一次，加上 `refreshValues()` 与环境读数（33 个点，一批 40 条上限，
-本身只要 1 次）。**这些批次完全可以合并成一到两次** —— 属性项都是 `(did, siid, piid)`
-三元组，回包也带同样的三元组，合并后按三元组分发即可，能把这 9 次压到 2 次。
+稳定期每次采样只有 1 条 `prop.get`（环境读数 33 项）：前 30 分钟每分钟一次，
+之后每 5 分钟一次（`maybeSample()` 按 `envStartAt` 判断节奏），即 288 次/天；
+云端回填每 6 小时一轮（`max_pages=4`，单轮 66~99 次），合计约 690 次/天。
 
-稳定期：前 30 分钟每分钟 1 批 `prop.get`，之后每 5 分钟 1 批（`maybeSample()`
-按 `envStartAt` 判断节奏），即 288 次/天；云端回填每 6 小时一轮（`max_pages=4`，
-单轮 66~99 次），合计约 690 次/天。
+### 两条踩过的坑
+
+**① 同一个接口别连着查两遍。** `device.list` / `home.list` / `scene.list` 都要家庭列表，
+前端是连续调的 —— 原来每条命令各自 `homes()` 真发一次 `gethome_merged`，启动就是同接口
+查两遍。改成 `homes(refresh)`：`devices()` 用 `refresh=true` 拉一次并填缓存，
+另两条命令复用；`logout()` 作废缓存（换账号不能还看上一个账号的家）。
+
+**② 「一次 40 条」是错的假设。** 卡片摘要原来按品类各发一条 `prop.get`
+（音箱 / 传感器 / 空气 / 灯光 / 空调 / 净水 / 通断开关），启动连着 9 条，
+每条才三五项。合并成一个批次后实测：**一次发 152 项，云端回了 152 行**（含读不到的项，
+code 非 0 但都给了），40 并不是硬上限。于是 `lib/propGet.ts` 的批次放宽到 200，
+并保留 40 条的兜底：一旦 `got < sent` 就按 40 拆开重发那一段 —— 能带多少是云端说了算，
+宁可多几个请求，也不能让卡片静默停在「未读」。
 
 ## 启动崩溃：`VCRUNTIME140.dll` 访问冲突（已修复）
 

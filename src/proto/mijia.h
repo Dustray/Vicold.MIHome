@@ -53,7 +53,15 @@ public:
     void wait_login();   // 阻塞长轮询（最长约 120s）
     void logout();
 
-    json homes();                                   // 家庭列表（含房间）
+    /**
+     * 家庭列表（含房间）。
+     *
+     * `refresh=false` 时走会话内缓存：`device.list` / `home.list` / `scene.list` 三条命令
+     * 都需要它，而前端是连着一串调的 —— 每次真发一遍就是同一个接口连查三遍。
+     * 刷新设备清单（`device.list`）会用 `refresh=true` 重新拉，所以「加了新设备点刷新」
+     * 依然能立刻看到。
+     */
+    json homes(bool refresh = false);
     json home_list();                               // 归一化后的家庭 + 房间（含空房间）
     json devices();                                 // 全部设备（自有 + 共享）
     json device_spec(const std::string& spec_type); // miot-spec 规格（带磁盘缓存）
@@ -82,6 +90,8 @@ public:
     ApiStats stats() const {
         return ApiStats{api_total_.load(), api_errors_.load()};
     }
+    /** 已拉到的家庭数（`homes()` 缓存里有几个），诊断日志用 */
+    std::size_t home_count() const { return homes_cache_.size(); }
     /**
      * 请求计数回调，宿主拿它写日志。
      *
@@ -109,6 +119,8 @@ private:
     std::filesystem::path auth_path_;
     json auth_ = json::object();
     json pending_login_ = json::object();   // begin_login 与 wait_login 之间传递
+    json homes_cache_ = json::array();      // homes(false) 的会话内缓存
+    bool homes_ready_ = false;
 
     // 请求计数（worker 线程 + 可能的并发调用，用原子；mutable 因为 stats() 是 const）
     mutable std::atomic<long long> api_total_{0};

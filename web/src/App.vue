@@ -31,6 +31,7 @@ import {
 } from './lib/env'
 import { backfillCloud, BACKFILL_HOURS, flush as flushHistory, load as loadHistory, startAutoFlush, startNowTicker, stopAutoFlush, stopNowTicker } from './lib/history'
 import { hasCustomOrder, moveRoom as moveRoomOrder, resetRoomOrder, sortRooms } from './lib/roomOrder'
+import { fetchProps, pickRow, type PropIndex } from './lib/propGet'
 import { useDragSort } from './lib/sortable'
 import type { CardKeyView, Device, Home, PropDef, Scene, Spec } from './lib/types'
 
@@ -523,18 +524,31 @@ async function hydratePowers() {
         if (c) lightItems.push({ did: pDid, uiDid, siid: c.siid, piid: c.piid, kind: 'ct' })
         if (m) lightItems.push({ did: pDid, uiDid, siid: m.siid, piid: m.piid, kind: 'mode', def: m })
       }
-
-      if (items.length % 40 === 0) await flushPowerBatch(items)
     }
   }
   await Promise.all([worker(), worker(), worker(), worker()])
-  await flushPowerBatch(items)
-  await flushAcBatch(acItems)
-  await flushLightBatch(lightItems)
-  await flushSensorBatch(sensorItems)
-  await flushAirBatch(airItems)
-  await flushSpeakerBatch(speakerItems)
-  await flushTankBatch(tankItems)
+
+  // 七个品类一次读完。
+  //
+  // 原来是「每类各发一条 prop.get」，启动时连着发 7 条 —— 可读的是同一批设备、
+  // 同一批属性，每条才三五项。合并后 fetchProps 内部会再去重（灯和开关都要读 on），
+  // 一次就把 100 多项带回来（实测 152 项一次发、一次回），启动因此少发 6 个请求。
+  const index = await fetchProps([
+    ...items,
+    ...acItems,
+    ...lightItems,
+    ...sensorItems,
+    ...airItems,
+    ...speakerItems,
+    ...tankItems,
+  ])
+  await flushPowerBatch(items, index)
+  await flushAcBatch(acItems, index)
+  await flushLightBatch(lightItems, index)
+  await flushSensorBatch(sensorItems, index)
+  await flushAirBatch(airItems, index)
+  await flushSpeakerBatch(speakerItems, index)
+  await flushTankBatch(tankItems, index)
 }
 
 interface SpeakerItem {
@@ -550,18 +564,13 @@ interface SpeakerItem {
 const PLAY_STATE_ZH: Record<string, string> = { '0': '已停止', '1': '播放中', '2': '已暂停' }
 
 /** 音箱摘要批量读取：同前几个，按 did/siid/piid 三元组回填，不依赖返回顺序 */
-async function flushSpeakerBatch(items: SpeakerItem[]) {
+async function flushSpeakerBatch(items: SpeakerItem[], rows?: PropIndex) {
   if (!items.length) return
   try {
-    const ret = await invoke<{ did?: string; siid: number; piid: number; code: number; value?: unknown }[]>(
-      'prop.get',
-      { items: items.map(({ did, siid, piid }) => ({ did, siid, piid })) }
-    )
-    const list = Array.isArray(ret) ? ret : [ret]
+    // 传了 rows 就复用 hydratePowers 合并好的那一批，没传才自己发一条
+    const index = rows ?? (await fetchProps(items))
     for (const it of items) {
-      const row = list.find(
-        (r) => r && r.did === it.did && r.siid === it.siid && r.piid === it.piid
-      )
+      const row = pickRow(index, it)
       if (!row || row.code !== 0) continue
       const st = speakerState[it.uiDid] || (speakerState[it.uiDid] = {})
       if (it.kind === 'mute') {
@@ -592,18 +601,13 @@ interface SensorItem {
 }
 
 /** 温湿度计摘要批量读取：与前两个一样按 did/siid/piid 三元组回填 */
-async function flushSensorBatch(items: SensorItem[]) {
+async function flushSensorBatch(items: SensorItem[], rows?: PropIndex) {
   if (!items.length) return
   try {
-    const ret = await invoke<{ did?: string; siid: number; piid: number; code: number; value?: unknown }[]>(
-      'prop.get',
-      { items: items.map(({ did, siid, piid }) => ({ did, siid, piid })) }
-    )
-    const list = Array.isArray(ret) ? ret : [ret]
+    // 传了 rows 就复用 hydratePowers 合并好的那一批，没传才自己发一条
+    const index = rows ?? (await fetchProps(items))
     for (const it of items) {
-      const row = list.find(
-        (r) => r && r.did === it.did && r.siid === it.siid && r.piid === it.piid
-      )
+      const row = pickRow(index, it)
       if (!row || row.code !== 0) continue
       const n = Number(row.value)
       if (!Number.isFinite(n)) continue
@@ -631,18 +635,13 @@ interface AirItem {
 }
 
 /** 空气质量监测仪摘要批量读取：同样按 did/siid/piid 三元组回填 */
-async function flushAirBatch(items: AirItem[]) {
+async function flushAirBatch(items: AirItem[], rows?: PropIndex) {
   if (!items.length) return
   try {
-    const ret = await invoke<{ did?: string; siid: number; piid: number; code: number; value?: unknown }[]>(
-      'prop.get',
-      { items: items.map(({ did, siid, piid }) => ({ did, siid, piid })) }
-    )
-    const list = Array.isArray(ret) ? ret : [ret]
+    // 传了 rows 就复用 hydratePowers 合并好的那一批，没传才自己发一条
+    const index = rows ?? (await fetchProps(items))
     for (const it of items) {
-      const row = list.find(
-        (r) => r && r.did === it.did && r.siid === it.siid && r.piid === it.piid
-      )
+      const row = pickRow(index, it)
       if (!row || row.code !== 0) continue
       const n = Number(row.value)
       if (!Number.isFinite(n)) continue
@@ -673,18 +672,13 @@ interface LightItem {
 }
 
 /** 灯具摘要批量读取：同样按 did/siid/piid 三元组回填，不依赖返回顺序 */
-async function flushLightBatch(items: LightItem[]) {
+async function flushLightBatch(items: LightItem[], rows?: PropIndex) {
   if (!items.length) return
   try {
-    const ret = await invoke<{ did?: string; siid: number; piid: number; code: number; value?: unknown }[]>(
-      'prop.get',
-      { items: items.map(({ did, siid, piid }) => ({ did, siid, piid })) }
-    )
-    const list = Array.isArray(ret) ? ret : [ret]
+    // 传了 rows 就复用 hydratePowers 合并好的那一批，没传才自己发一条
+    const index = rows ?? (await fetchProps(items))
     for (const it of items) {
-      const row = list.find(
-        (r) => r && r.did === it.did && r.siid === it.siid && r.piid === it.piid
-      )
+      const row = pickRow(index, it)
       if (!row || row.code !== 0) continue
       const st = lightState[it.uiDid] || (lightState[it.uiDid] = {})
       if (it.kind === 'mode') {
@@ -715,18 +709,13 @@ interface AcItem {
 }
 
 /** 空调摘要批量读取：返回顺序会被重排，必须按 did/siid/piid 三元组回填 */
-async function flushAcBatch(items: AcItem[]) {
+async function flushAcBatch(items: AcItem[], rows?: PropIndex) {
   if (!items.length) return
   try {
-    const ret = await invoke<{ did?: string; siid: number; piid: number; code: number; value?: unknown }[]>(
-      'prop.get',
-      { items: items.map(({ did, siid, piid }) => ({ did, siid, piid })) }
-    )
-    const list = Array.isArray(ret) ? ret : [ret]
+    // 传了 rows 就复用 hydratePowers 合并好的那一批，没传才自己发一条
+    const index = rows ?? (await fetchProps(items))
     for (const it of items) {
-      const row = list.find(
-        (r) => r && r.did === it.did && r.siid === it.siid && r.piid === it.piid
-      )
+      const row = pickRow(index, it)
       if (!row || row.code !== 0) continue
       const st = acState[it.uiDid] || (acState[it.uiDid] = {})
       if (it.kind === 'temp') {
@@ -775,18 +764,13 @@ function tankPumpAlert(text: string): boolean {
 /**
  * 鱼缸摘要批量读取：返回顺序会被重排，必须按 did/siid/piid 三元组回填。
  */
-async function flushTankBatch(items: TankItem[]) {
+async function flushTankBatch(items: TankItem[], rows?: PropIndex) {
   if (!items.length) return
   try {
-    const ret = await invoke<{ did?: string; siid: number; piid: number; code: number; value?: unknown }[]>(
-      'prop.get',
-      { items: items.map(({ did, siid, piid }) => ({ did, siid, piid })) }
-    )
-    const list = Array.isArray(ret) ? ret : [ret]
+    // 传了 rows 就复用 hydratePowers 合并好的那一批，没传才自己发一条
+    const index = rows ?? (await fetchProps(items))
     for (const it of items) {
-      const row = list.find(
-        (r) => r && r.did === it.did && r.siid === it.siid && r.piid === it.piid
-      )
+      const row = pickRow(index, it)
       if (!row || row.code !== 0) continue
       const st = tankState[it.uiDid] || (tankState[it.uiDid] = {})
       if (it.kind === 'temp') {
@@ -973,18 +957,12 @@ function channelNamesFor(device: Device): Record<number, string> {
  * 必须用 did/siid/piid 三元组匹配；匹配不上就跳过，
  * 让卡片保持「未读」而不是显示一个错的通断状态。
  */
-async function flushPowerBatch(items: PowerItem[]) {
+async function flushPowerBatch(items: PowerItem[], rows?: PropIndex) {
   if (!items.length) return
-  const chunk = items.splice(0, items.length)
   try {
-    const ret = await invoke<
-      { did?: string; siid: number; piid: number; code: number; value?: unknown }[]
-    >('prop.get', { items: chunk.map(({ did, siid, piid }) => ({ did, siid, piid })) })
-    const list = Array.isArray(ret) ? ret : [ret]
-    for (const it of chunk) {
-      const row = list.find(
-        (r) => r && r.did === it.did && r.siid === it.siid && r.piid === it.piid
-      )
+    const index = rows ?? (await fetchProps(items))
+    for (const it of items) {
+      const row = pickRow(index, it)
       if (!row || row.code !== 0) continue
       if (it.kind === 'on') {
         // 必须拿到明确布尔值才写：设备偶发不返回该属性时，`!!undefined`

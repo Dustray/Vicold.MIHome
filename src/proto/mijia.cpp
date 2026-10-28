@@ -237,6 +237,9 @@ json Client::status() const {
 
 void Client::logout() {
     auth_ = json::object();
+    // 换账号了，家庭列表缓存必须跟着作废，否则登录后看到的还是上一个人的家
+    homes_cache_ = json::array();
+    homes_ready_ = false;
     std::error_code ec;
     std::filesystem::remove(auth_path_, ec);
 }
@@ -506,17 +509,23 @@ json Client::request(const std::string& uri, json data) {
     throw ApiError(-1, "请求失败");
 }
 
-json Client::homes() {
+json Client::homes(bool refresh) {
+    // 一次会话里这三条命令都要家庭列表，前端又是连着调的：
+    // `device.list` 先把缓存填上（它是刷新入口，所以必须真拉），
+    // 紧接着的 `home.list` / `scene.list` 直接复用，少发两次 gethome_merged。
+    if (!refresh && homes_ready_) return homes_cache_;
     json data{{"fg", true},     {"fetch_share", true}, {"fetch_share_dev", true},
               {"fetch_cariot", true}, {"limit", 300},     {"app_ver", 7},
               {"plat_form", 0}};
     auto ret = request("/v2/homeroom/gethome_merged", data);
-    return ret.value("homelist", json::array());
+    homes_cache_ = ret.value("homelist", json::array());
+    homes_ready_ = true;
+    return homes_cache_;
 }
 
 json Client::home_list() {
     // 房间必须来自家庭信息本身：从设备反推会漏掉没有设备的房间
-    const auto homelist = homes();
+    const auto homelist = homes(false);   // 复用 device.list 刚拉的那份
     json out = json::array();
     for (const auto& home : homelist) {
         json rooms = json::array();
@@ -577,7 +586,8 @@ json Client::shared_devices() {
 }
 
 json Client::devices() {
-    const auto homelist = homes();
+    // 刷新入口：真拉一次，顺手填上缓存，后面的 home.list / scene.list 直接用
+    const auto homelist = homes(true);
     // 设备本身不带房间字段；归属关系只出现在 roomlist[].dids 里（含 .sN 虚拟子设备）
     std::map<std::string, std::string> room_of_did;
     std::map<std::string, std::string> room_id_of_did;
@@ -815,7 +825,7 @@ json Client::run_action(const std::string& did, int siid, int aiid, json params)
 }
 
 json Client::scenes() {
-    const auto homelist = homes();
+    const auto homelist = homes(false);
     json out = json::array();
     for (const auto& home : homelist) {
         const std::string home_id = home.value("id", "");
