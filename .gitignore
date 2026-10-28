@@ -11,3 +11,6 @@ third_party/winsdk/
 
 # 调试截图（CDP 抓的界面快照，纯本地产物）
 preview/
+
+# WorkBuddy 的工作区数据（会话记忆、任务日志），纯本地
+.workbuddy/
