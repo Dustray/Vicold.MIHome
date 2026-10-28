@@ -561,7 +561,7 @@ model ──► GET https://home.miot-spec.com/p/<model>   （SSR 页面，300KB
 - 登录凭据：`%LOCALAPPDATA%\Vicold.MIHome\auth.json`
 - 规格缓存：`%LOCALAPPDATA%\Vicold.MIHome\spec\`
 - 历史采样：`%LOCALAPPDATA%\Vicold.MIHome\history.json`（环境读数时间序列，保留 7 天）
-- 应用设置：`%LOCALAPPDATA%\Vicold.MIHome\settings.json`（`closeToTray`）
+- 应用设置：`%LOCALAPPDATA%\Vicold.MIHome\settings.json`（`closeToTray` + 窗口几何 `window`）
 - 开机自启：注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的值 `Vicold.MIHome`
 - 设备产品图：`%LOCALAPPDATA%\Vicold.MIHome\img\`（`<model>.png`，`.missing` 记产品库里没有的型号）
 - WebView2 配置：`%LOCALAPPDATA%\Vicold.MIHome\WebView2\`
@@ -825,6 +825,34 @@ mousedown@300,20 detail=2
 - 「关闭窗口时最小化到托盘」开关持久化在 `%LOCALAPPDATA%\Vicold.MIHome\settings.json`
   的 `closeToTray` 字段（默认 `true`），在托盘右键菜单里切换。
 
+### 记住窗口大小和位置
+
+同一条退出路径上顺手记一下窗口几何，下次启动摆回原来的位置：
+
+```json
+{"closeToTray": true,
+ "window": {"x": 240, "y": 160, "w": 1240, "h": 760, "maximized": false}}
+```
+
+几个必须这么写的地方：
+
+- **存的是「还原态」矩形，不是当前矩形**。用 `GetWindowPlacement().rcNormalPosition`，
+  别用 `GetWindowRect` —— 最大化时后者给的是铺满屏幕的尺寸，存下来下次「还原」
+  就成了全屏大小，用户再点还原按钮就没地方可退。
+- **每一路关闭都要存**：`WM_CLOSE`（关窗口进托盘，这条之后不会再走 `WM_DESTROY`，
+  程序要是被任务管理器结束就永远没机会写了）和 `WM_DESTROY`（托盘菜单退出、关机）。
+- **窗口隐藏时不动 `maximized` 标记**。开机自启直接进托盘那次窗口从来没显示过，
+  这时 `IsZoomed` 一定是 0，照写会把「上次是最大化」抹掉。
+- **启动时先读设置再建窗口**，窗口建好后再 `SetWindowPos` 摆位置 —— 那时才拿得到
+  目标屏幕的 DPI，最小尺寸（1040×680 是 96dpi 下的值）要按它缩放。此刻窗口还没
+  `ShowWindow`，挪过去不会闪。最大化要等到真正 `Show` 的时候再套用：自启到托盘
+  那一路不能提前 Show 一下把它带出来（`pending_maximize_`）。
+- **位置可能已经不在任何屏幕上了**（拔了副屏、改了分辨率）。要求至少 120×80 压在
+  某块屏幕的工作区里，否则退回默认位置；能用的话顺手把位置和尺寸夹进那块工作区，
+  换个更小的屏幕窗口也不会比屏幕还大。
+- `settings.json` 一次读全、一次写全。以前只写 `closeToTray`，加了几何之后要是
+  各写各的，先存几何再切托盘开关几何就丢了。
+
 ### 开机自动启动
 
 要让历史曲线不断档，进程必须 24 小时活着 —— 除了关窗口不退出，还要**开机就起来**。
@@ -835,6 +863,9 @@ mousedown@300,20 detail=2
 - `--tray` 走**静默启动**：`create()` 里跳过 `ShowWindow`，也不挂那个 1.5 秒后
   抢前台的定时器（它会 `ShowWindow(SW_SHOW)`，等于把静默启动废掉），最后
   `hide_to_tray(quiet=true)` 不弹气泡。
+- 那条抢前台的定时器还有个坑：用户体验上「启动后一秒内就关窗口」会把刚藏起来的
+  窗口又弹回来。所以 `hide_to_tray()` 里顺手 `KillTimer(hwnd_, 1)`，定时器回调里
+  也再查一次 `IsWindowVisible` 兜底。
 - 开关有两个入口，状态以**宿主回读注册表**为准：
   - 侧栏底部「后台常驻」卡片（`app.settings` 读、`app.autostart` 写）；
   - 托盘右键菜单（勾选状态实时反映）。

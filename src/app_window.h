@@ -80,8 +80,13 @@ private:
     void show_tray_menu();
     void hide_to_tray(bool quiet = false);
     void apply_tray_balloon();
-    bool load_close_to_tray();
-    void save_close_to_tray();
+    // ---- settings.json：关闭到托盘的开关 + 上次退出时的窗口几何 ----
+    void load_settings();
+    void save_settings();
+    // 把当前的窗口大小/位置/最大化状态记进成员变量
+    void capture_window_geometry();
+    // 按记下来的几何摆好窗口（放在窗口创建之后做：那时才拿得到目标屏幕的 DPI）
+    void restore_window_geometry();
     // 宿主定时推 sample.tick：窗口隐藏时 Chromium 会节流网页定时器，
     // 由宿主驱动采样，保证后台也能持续记录
     void push_sample_tick();
@@ -121,6 +126,15 @@ private:
     bool maximized_ = false;
     // 上一次推送给前端的最大化状态，用于去重避免重复推送
     bool pushed_maximized_ = false;
+
+    // ---- 窗口几何（记住上次退出时的大小和位置）----
+    // 存的是**正常态**的窗口矩形（最大化时也存最大化之前的那个），物理像素
+    RECT win_rect_{};
+    bool win_rect_ok_ = false;
+    bool start_maximized_ = false;
+    // 上次是最大化、但窗口还没真正显示过（开机自启直接进托盘）：
+    // 等第一次 Show 的时候再套用最大化，不能提前 Show 一下把它带出来
+    bool pending_maximize_ = false;
 };
 
 }  // namespace vc

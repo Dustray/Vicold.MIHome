@@ -361,6 +361,38 @@ int dpi_of(HWND hwnd) {
     return fn ? static_cast<int>(fn(hwnd)) : 96;
 }
 
+/**
+ * 校验上次存下来的窗口矩形还能不能用，并把它夹进那块屏幕的工作区。
+ *
+ * 拔掉副屏、改分辨率、换远程桌面尺寸之后，存下来的坐标很可能落在屏幕外面 ——
+ * 那样窗口一启动就在看不见的地方，用户只会以为程序没起来。这里要求至少有一块
+ * 120×80 的面积压在某块屏幕的工作区里，才算「看得见」。
+ *
+ * 顺手把尺寸和位置夹进那块工作区：换到更小的屏幕后，窗口不会比屏幕还大。
+ */
+bool fit_saved_rect(RECT& r) {
+    HMONITOR mon = MonitorFromRect(&r, MONITOR_DEFAULTTONULL);
+    if (!mon) return false;
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(mon, &mi)) return false;
+
+    RECT overlap{};
+    if (!IntersectRect(&overlap, &r, &mi.rcWork)) return false;
+    if (overlap.right - overlap.left < 120 || overlap.bottom - overlap.top < 80) return false;
+
+    const int work_w = mi.rcWork.right - mi.rcWork.left;
+    const int work_h = mi.rcWork.bottom - mi.rcWork.top;
+    const int w = std::min(static_cast<int>(r.right - r.left), work_w);
+    const int h = std::min(static_cast<int>(r.bottom - r.top), work_h);
+    const int x = std::clamp(static_cast<int>(r.left), static_cast<int>(mi.rcWork.left),
+                             static_cast<int>(mi.rcWork.right) - w);
+    const int y = std::clamp(static_cast<int>(r.top), static_cast<int>(mi.rcWork.top),
+                             static_cast<int>(mi.rcWork.bottom) - h);
+    r = RECT{x, y, x + w, y + h};
+    return true;
+}
+
 void log_line(const std::string& text) {
     static std::filesystem::path path = data_dir() / L"app.log";
     std::ofstream out(path, std::ios::app | std::ios::binary);
@@ -443,6 +475,10 @@ bool AppWindow::create(HINSTANCE instance, int show_cmd) {
     if (!RegisterClassExW(&wc)) return false;
     log_boot("wndclass");
 
+    // 设置要在窗口创建之前读：里面存着上次退出时的大小和位置
+    load_settings();
+    log_boot("settings");
+
     const int dpi = 96;
     const int w = MulDiv(1280, dpi, 96);
     const int h = MulDiv(820, dpi, 96);
@@ -452,6 +488,12 @@ bool AppWindow::create(HINSTANCE instance, int show_cmd) {
                             CW_USEDEFAULT, CW_USEDEFAULT, w, h, nullptr, nullptr, instance, this);
     if (!hwnd_) return false;
     log_boot("hwnd");
+
+    // 上次退出时的大小和位置。放在窗口创建之后还原：这时才拿得到目标屏幕的
+    // DPI，最小尺寸（1040×680 是 96dpi 下的值）要按它缩放。
+    // 此刻窗口还没 Show，挪过去不会闪一下。
+    if (win_rect_ok_) restore_window_geometry();
+    pending_maximize_ = start_maximized_;
 
     // Win11 原生圆角；Win10 上调用失败无副作用
     DWORD corner = 2;  // DWMWCP_ROUND
@@ -465,8 +507,6 @@ bool AppWindow::create(HINSTANCE instance, int show_cmd) {
     log_boot("images");
 
     // 托盘常驻：关掉窗口后进程仍在，环境采样才能连续攒满 24 小时
-    load_close_to_tray();
-    log_boot("settings");
     create_tray();
 
     // Vue 产物的落点：<exe>/web/dist
@@ -478,7 +518,8 @@ bool AppWindow::create(HINSTANCE instance, int show_cmd) {
     const bool tray_start = wants_tray_start();
     if (!tray_start) {
         if (show_cmd == SW_HIDE) show_cmd = SW_SHOWNORMAL;
-        ShowWindow(hwnd_, show_cmd);
+        ShowWindow(hwnd_, pending_maximize_ ? SW_SHOWMAXIMIZED : show_cmd);
+        pending_maximize_ = false;
         UpdateWindow(hwnd_);
         SetForegroundWindow(hwnd_);
         BringWindowToTop(hwnd_);
@@ -493,6 +534,7 @@ bool AppWindow::create(HINSTANCE instance, int show_cmd) {
     GetWindowRect(hwnd_, &wr);
     GetClientRect(hwnd_, &cr);
     log_line("window rect=" + std::to_string(wr.right - wr.left) + "x" + std::to_string(wr.bottom - wr.top) +
+             " at " + std::to_string(wr.left) + "," + std::to_string(wr.top) +
              " client=" + std::to_string(cr.right) + "x" + std::to_string(cr.bottom));
 
     start_worker();
@@ -562,6 +604,8 @@ LRESULT AppWindow::handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TIMER:
             if (wp == 1) {
                 KillTimer(hwnd, 1);
+                // 这期间用户可能已经点了关闭（窗口进了托盘），别再把它弹出来
+                if (!IsWindowVisible(hwnd_)) return 0;
                 log_line("window visible=" + std::to_string(IsWindowVisible(hwnd_) ? 1 : 0));
                 if (controller_) {
                     controller_->put_IsVisible(TRUE);
@@ -588,7 +632,11 @@ LRESULT AppWindow::handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_CLOSE:
-            // 关闭按钮：按设置最小化到托盘（后台继续采样），否则真退出
+            // 关闭按钮：按设置最小化到托盘（后台继续采样），否则真退出。
+            // 两种走法都要先把窗口几何记下来 —— 存到托盘那一路后面不会再走
+            // WM_DESTROY，程序是被任务管理器/关机结束的话就永远没机会存了
+            capture_window_geometry();
+            save_settings();
             if (close_to_tray_) {
                 hide_to_tray();
                 return 0;
@@ -622,6 +670,9 @@ LRESULT AppWindow::handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_DESTROY:
+            // 从托盘菜单「退出」、或者系统关机走的都是这一条，最后再存一次
+            capture_window_geometry();
+            save_settings();
             destroy_tray();
             stop_worker();
             PostQuitMessage(0);
@@ -766,7 +817,9 @@ void AppWindow::destroy_tray() {
 
 void AppWindow::show_main_window() {
     if (!hwnd_) return;
-    ShowWindow(hwnd_, SW_SHOW);
+    // 开机自启进托盘那次窗口没显示过，最大化要等现在补上（见 pending_maximize_）
+    ShowWindow(hwnd_, pending_maximize_ ? SW_SHOWMAXIMIZED : SW_SHOW);
+    pending_maximize_ = false;
     if (controller_) controller_->put_IsVisible(TRUE);
     resize_webview();
     SetForegroundWindow(hwnd_);
@@ -774,6 +827,10 @@ void AppWindow::show_main_window() {
 }
 
 void AppWindow::hide_to_tray(bool quiet) {
+    // 启动后 1.5 秒那个「抢前台」定时器会把窗口 ShowWindow(SW_SHOW) 一遍。
+    // 用户手够快、启动后一秒内就关窗口的话，它会把刚藏起来的窗口又弹回来。
+    // 藏窗口就顺带把这个一次性定时器掐掉。
+    KillTimer(hwnd_, 1);
     ShowWindow(hwnd_, SW_HIDE);
     // 开机自启时安静进托盘：每次开机都弹一次「仍在后台运行」太吵，
     // 但那一次仍然算「已提示过」，之后用户手动关窗口时还是会提示一遍
@@ -821,7 +878,7 @@ void AppWindow::show_tray_menu() {
         show_main_window();
     } else if (cmd == kTrayIdToggle) {
         close_to_tray_ = !close_to_tray_;
-        save_close_to_tray();
+        save_settings();
     } else if (cmd == kTrayIdAutostart) {
         const bool on = !autostart_enabled();
         if (!set_autostart(on)) {
@@ -841,26 +898,85 @@ void AppWindow::show_tray_menu() {
     }
 }
 
-bool AppWindow::load_close_to_tray() {
-    close_to_tray_ = true;
+// ---------------------------------------------------------------- 设置持久化
+
+/**
+ * settings.json 里存两样东西：关窗口是否进托盘、上次退出时的窗口几何。
+ *
+ * 一次读全、一次写全 —— 分开写会互相覆盖（以前只写 closeToTray，
+ * 加了几何之后先存几何再切托盘开关，几何就丢了）。
+ */
+void AppWindow::load_settings() {
+    close_to_tray_ = true;  // 默认关窗口进托盘：后台要继续采样
     std::ifstream in(data_dir() / L"settings.json", std::ios::binary);
-    if (!in) return close_to_tray_;
+    if (!in) return;
     try {
         json j = json::parse(in);
         if (j.contains("closeToTray") && j["closeToTray"].is_boolean()) {
             close_to_tray_ = j["closeToTray"].get<bool>();
         }
+        if (j.contains("window") && j["window"].is_object()) {
+            const json& w = j["window"];
+            const int x = w.value("x", 0);
+            const int y = w.value("y", 0);
+            const int ww = w.value("w", 0);
+            const int hh = w.value("h", 0);
+            // 宽高有一个不对就当没存过，别用一堆 0 去摆窗口
+            if (ww > 0 && hh > 0) {
+                win_rect_ = RECT{x, y, x + ww, y + hh};
+                win_rect_ok_ = true;
+                start_maximized_ = w.value("maximized", false);
+            }
+        }
     } catch (...) {
-        // 文件坏了就用默认值
+        // 文件坏了就当没存过，全部用默认值
     }
-    return close_to_tray_;
 }
 
-void AppWindow::save_close_to_tray() {
+void AppWindow::save_settings() {
     json j;
     j["closeToTray"] = close_to_tray_;
+    if (win_rect_ok_) {
+        j["window"] = json{{"x", win_rect_.left},
+                           {"y", win_rect_.top},
+                           {"w", win_rect_.right - win_rect_.left},
+                           {"h", win_rect_.bottom - win_rect_.top},
+                           {"maximized", start_maximized_}};
+    }
     std::ofstream out(data_dir() / L"settings.json", std::ios::binary | std::ios::trunc);
     if (out) out << j.dump();
+}
+
+void AppWindow::capture_window_geometry() {
+    if (!hwnd_) return;
+    // 用 GetWindowPlacement 而不是 GetWindowRect：最大化时 GetWindowRect 给的是
+    // 铺满屏幕的那个矩形，存下来下次「还原」就成了全屏大小；
+    // rcNormalPosition 始终是还原态的矩形。
+    WINDOWPLACEMENT wp{};
+    wp.length = sizeof(wp);
+    if (!GetWindowPlacement(hwnd_, &wp)) return;
+    const RECT& r = wp.rcNormalPosition;
+    if (r.right - r.left <= 0 || r.bottom - r.top <= 0) return;
+    win_rect_ = r;
+    win_rect_ok_ = true;
+    // 窗口隐藏着的时候不要动最大化标记：开机自启直接进托盘那次，窗口从来没
+    // 显示过，这时 IsZoomed 一定是 0，照写会把用户「上次是最大化」的偏好抹掉
+    if (IsWindowVisible(hwnd_)) start_maximized_ = IsZoomed(hwnd_) != FALSE;
+}
+
+void AppWindow::restore_window_geometry() {
+    RECT r = win_rect_;
+    if (!fit_saved_rect(r)) {
+        log_line("saved window rect not on any screen, keep default placement");
+        return;
+    }
+    const int dpi = dpi_of(hwnd_);
+    const int w = std::max(static_cast<int>(r.right - r.left), MulDiv(kMinWidth, dpi, 96));
+    const int h = std::max(static_cast<int>(r.bottom - r.top), MulDiv(kMinHeight, dpi, 96));
+    SetWindowPos(hwnd_, nullptr, r.left, r.top, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    log_line("restore window " + std::to_string(w) + "x" + std::to_string(h) + " at " +
+             std::to_string(r.left) + "," + std::to_string(r.top) +
+             (start_maximized_ ? " maximized" : ""));
 }
 
 void AppWindow::push_sample_tick() {
