@@ -107,12 +107,13 @@ onUnmounted(() => {
   <header class="titlebar" @mousedown.prevent="onTitleDown">
     <div class="brand">
       <span class="mark">
+        <!-- 米家那个「M 房」标记：圆角方环 + 顶边正中压一道 V -->
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-          <path d="M4 11.2 12 4l8 7.2V20H4v-8.8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
-          <path d="M9.5 20v-5.5h5V20" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+          <path d="M12 8.3 10.9 6.9H7.2v6.6a4.8 4.8 0 0 0 9.6 0V6.9h-4.3Z"
+            stroke="currentColor" stroke-width="2.3" stroke-linejoin="round" stroke-linecap="round" />
         </svg>
       </span>
-      <span class="name">Vicold.MIHome</span>
+      <span class="name">桌面米家</span>
     </div>
 
     <div class="spacer" />

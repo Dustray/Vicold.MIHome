@@ -11,6 +11,8 @@
 #include <shlobj.h>
 #include <windowsx.h>
 
+#include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -27,7 +29,7 @@ namespace vc {
 namespace {
 
 constexpr wchar_t kClassName[] = L"VicoldMIHomeWindow";
-constexpr wchar_t kTitle[] = L"Vicold.MIHome";
+constexpr wchar_t kTitle[] = L"桌面米家";
 constexpr wchar_t kVirtualHost[] = L"app.vicold.mihome";
 // 设备产品图走第二个虚拟主机：图片缓存在 <data>/img，网页直接 <img src>，
 // 不用把几 MB 的 base64 塞进桥接消息
@@ -108,11 +110,17 @@ constexpr int kMinWidth = 1040;
 constexpr int kMinHeight = 680;
 
 /**
- * 运行时自绘应用图标（蓝底白屋）。
+ * 运行时自绘应用图标（米家风：米家绿圆角方块 + 白色「M 房」标记）。
  *
  * 项目没有 .rc 资源文件，托盘图标如果用 IDI_APPLICATION 会是一块灰色方块，
- * 和蓝白配色完全不搭。这里在内存里拼一个标准 .ico（32bpp BGRA + alpha），
+ * 和界面配色完全不搭。这里在内存里拼一个标准 .ico（32bpp BGRA + alpha），
  * 再用 Windows 官方的"从内存加载图标"API 生成 HICON。
+ *
+ * 图形不是位图粘贴，而是按归一化坐标（0~1）算出来的：
+ *  - 底色是米家绿 RGB(73,177,128)，取自米家官网 favicon；
+ *  - 白色标记是一个圆角方环（底角圆到底，就是那个"圆底"），顶边正中往下
+ *    压出一个 V —— 那道 V 就是米家"M"的尖。参数是照 32px 官方 favicon
+ *    逐像素比着调的，16/24 这类小图标单独把线加粗、V 压浅一点。
  *
  * ⚠️ 两条踩坑记录（都因为本机 NuGet 版 Windows SDK 被裁剪过）：
  *  1) 不能用 CreateIconIndirect —— SDK 的 winuser.h 里没有 ICONDIR /
@@ -123,55 +131,76 @@ constexpr int kMinHeight = 680;
  */
 namespace {
 
-constexpr UINT32 kBrandBgra = 0xFF000000u | (0xF6u << 16) | (0x6Du << 8) | 0x2Fu;  // RGB(47,109,246)
-constexpr UINT32 kWhiteBgra = 0xFFFFFFFFu;
+// 米家绿：官网 favicon 的主力填充色 RGB(73,177,128)
+constexpr int kGreenR = 0x49;
+constexpr int kGreenG = 0xB1;
+constexpr int kGreenB = 0x80;
 
 #ifndef LR_VERSION
 #define LR_VERSION 0x00030000
 #endif
 
-/** 点是否在三角形内（叉积符号判定） */
-bool in_tri(double px, double py, double ax, double ay, double bx, double by, double cx, double cy) {
-    const double d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
-    const double d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
-    const double d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
-    const bool neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
-    const bool pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
-    return !(neg && pos);
+/**
+ * 圆角矩形有符号距离（<0 在内部）。
+ * 用距离场算描边而不是"外框减内框"，转角处的线宽才和其它地方一样粗。
+ */
+double sdf_round_rect(double u, double v, double hw, double hh, double r) {
+    const double dx = std::abs(u - 0.5) - hw + r;
+    const double dy = std::abs(v - 0.5) - hh + r;
+    const double ox = std::max(dx, 0.0);
+    const double oy = std::max(dy, 0.0);
+    return std::sqrt(ox * ox + oy * oy) + std::min(std::max(dx, dy), 0.0) - r;
 }
 
-/** 房子轮廓（归一化坐标 0~1）：屋顶三角 + 屋身 */
-bool in_house(double u, double v) {
-    if (in_tri(u, v, 0.50, 0.18, 0.16, 0.52, 0.84, 0.52)) return true;  // 屋顶
-    return u >= 0.26 && u <= 0.74 && v >= 0.50 && v <= 0.80;              // 屋身
+/**
+ * 米家标记（归一化坐标 0~1）：圆角方环 + 顶边正中的 V。
+ *
+ * V 的实现是把采样点往上抬 dip —— 等价于把环顶那条边整段往下弯，
+ * 抬得越多压得越深，中间最深、两侧线性收回到 0，正好是个 V 形。
+ * 只对 v < 0.45 生效，否则圆底会跟着往下坠。
+ */
+bool in_mark(double u, double v, double stroke, double dip_a, double dip_w) {
+    if (v < 0.45) {
+        v -= dip_a * std::max(0.0, 1.0 - std::abs(u - 0.5) / dip_w);
+    }
+    return std::abs(sdf_round_rect(u, v, 0.200, 0.215, 0.112)) <= stroke;
 }
 
-/** 门洞（挖回品牌色），小尺寸下不画，免得糊成一团 */
-bool in_door(double u, double v) {
-    return u >= 0.42 && u <= 0.58 && v >= 0.60 && v <= 0.80;
-}
+/** 画一帧像素（自上而下存储的 BGRA），ss×ss 超采样做抗锯齿 */
+std::vector<UINT32> render_app_pixels(int size, int ss) {
+    // 小图标单独调参：托盘 16px 上 V 形会被采样糊掉，不如压浅、线加粗
+    const bool tiny = size <= 24;
+    const double stroke = tiny ? 0.055 : 0.048;
+    const double dip_a = tiny ? 0.030 : 0.055;
+    const double dip_w = tiny ? 0.075 : 0.085;
+    // 方块自己的圆角：官方 favicon 是近乎方的超椭圆，0.17 已经看不出差别
+    const double tile_r = 0.17;
 
-/** 画一帧像素（自上而下存储的 BGRA） */
-std::vector<UINT32> render_app_pixels(int size) {
     std::vector<UINT32> px(static_cast<size_t>(size) * size, 0);
-    const int rr = std::max(2, size / 5);
-    const bool with_door = size >= 24;
-
+    const int n = ss * ss;
     for (int y = 0; y < size; y++) {
         for (int x = 0; x < size; x++) {
-            // 圆角矩形内判定
-            const int dx = std::max(0, std::max(rr - x, x - (size - 1 - rr)));
-            const int dy = std::max(0, std::max(rr - y, y - (size - 1 - rr)));
-            if (dx * dx + dy * dy > rr * rr) continue;  // 圆角外 = 完全透明
-
-            const double u = (x + 0.5) / size;
-            const double v = (y + 0.5) / size;
-            UINT32 c = kBrandBgra;
-            if (in_house(u, v)) {
-                c = kWhiteBgra;
-                if (with_door && in_door(u, v)) c = kBrandBgra;
+            int cov_tile = 0;
+            int cov_white = 0;
+            for (int sy = 0; sy < ss; sy++) {
+                for (int sx = 0; sx < ss; sx++) {
+                    const double u = (x + (sx + 0.5) / ss) / size;
+                    const double v = (y + (sy + 0.5) / ss) / size;
+                    if (sdf_round_rect(u, v, 0.5, 0.5, tile_r) > 0.0) continue;  // 圆角外
+                    cov_tile++;
+                    if (in_mark(u, v, stroke, dip_a, dip_w)) cov_white++;
+                }
             }
-            px[static_cast<size_t>(y) * size + x] = c;
+            if (cov_tile == 0) continue;  // 完全透明
+
+            // 白色覆盖率以"落在方块里的采样点"为分母：边缘像素才不会被圆角稀释
+            const double w = static_cast<double>(cov_white) / cov_tile;
+            const auto mix = [w](int base) {
+                return static_cast<UINT32>(std::lround(base * (1.0 - w) + 255.0 * w));
+            };
+            const UINT32 a = static_cast<UINT32>(std::lround(255.0 * cov_tile / n));
+            px[static_cast<size_t>(y) * size + x] =
+                (a << 24) | (mix(kGreenR) << 16) | (mix(kGreenG) << 8) | mix(kGreenB);
         }
     }
     return px;
@@ -207,13 +236,30 @@ std::vector<BYTE> pack_icon_image(const std::vector<UINT32>& px, int size) {
     return out;
 }
 
-/** 组装标准 .ico 内存镜像（单张 32bpp 图） */
-std::vector<BYTE> build_ico(int size) {
-    const auto px = render_app_pixels(size);
-    const auto img = pack_icon_image(px, size);
+/**
+ * 组装标准 .ico 内存镜像（多尺寸、全是 32bpp）。
+ *
+ * 一次给齐 16/24/32/48/64/128 六张，系统按用途各取所需（托盘要 16、
+ * 任务栏和 Alt-Tab 要 32~48、高 DPI 往上拿），比只给一张 32px 再让
+ * 系统缩放到处都清楚。
+ */
+std::vector<BYTE> build_ico(const int* sizes, int count) {
+    struct Image {
+        std::vector<BYTE> data;
+        int size;
+    };
+    std::vector<Image> images;
+    images.reserve(static_cast<size_t>(count));
+    for (int i = 0; i < count; i++) {
+        const int s = sizes[i];
+        images.push_back({pack_icon_image(render_app_pixels(s, s <= 64 ? 4 : 2), s), s});
+    }
 
-    const size_t headerSize = 6 + 16;  // ICONDIR + 1 条 ICONDIRENTRY
-    std::vector<BYTE> ico(headerSize + img.size(), 0);
+    const size_t headerSize = 6 + 16 * images.size();  // ICONDIR + N 条 ICONDIRENTRY
+    size_t total = headerSize;
+    for (const auto& im : images) total += im.data.size();
+
+    std::vector<BYTE> ico(total, 0);
     auto* p = ico.data();
     auto put16 = [](BYTE* q, WORD v) {
         q[0] = static_cast<BYTE>(v & 0xFF);
@@ -225,32 +271,62 @@ std::vector<BYTE> build_ico(int size) {
 
     put16(p + 0, 0);  // idReserved
     put16(p + 2, 1);  // idType = 1 (icon)
-    put16(p + 4, 1);  // idCount
+    put16(p + 4, static_cast<WORD>(images.size()));  // idCount
 
-    BYTE* e = p + 6;
-    e[0] = static_cast<BYTE>(size);
-    e[1] = static_cast<BYTE>(size);
-    e[2] = 0;  // bColorCount = 0（真彩）
-    e[3] = 0;  // bReserved
-    put16(e + 4, 1);   // wPlanes
-    put16(e + 6, 32);  // wBitCount
-    put32(e + 8, static_cast<DWORD>(img.size()));  // dwBytesInRes
-    put16(e + 12, static_cast<WORD>(headerSize));  // nID = 图像数据偏移
-
-    std::memcpy(p + headerSize, img.data(), img.size());
+    size_t offset = headerSize;
+    for (size_t i = 0; i < images.size(); i++) {
+        BYTE* e = p + 6 + i * 16;
+        // ⚠️ 目录里宽高是单字节，256 只能存成 0。这里最大 128，不踩这个坑
+        e[0] = static_cast<BYTE>(images[i].size);
+        e[1] = static_cast<BYTE>(images[i].size);
+        e[2] = 0;  // bColorCount = 0（真彩）
+        e[3] = 0;  // bReserved
+        put16(e + 4, 1);   // wPlanes
+        put16(e + 6, 32);  // wBitCount
+        put32(e + 8, static_cast<DWORD>(images[i].data.size()));  // dwBytesInRes
+        put32(e + 12, static_cast<DWORD>(offset));                // 图像数据偏移
+        std::memcpy(p + offset, images[i].data.data(), images[i].data.size());
+        offset += images[i].data.size();
+    }
     return ico;
 }
 
 }  // namespace
 
-HICON make_app_icon() {
-    const auto ico = build_ico(32);
-    if (ico.empty()) return nullptr;    BYTE* raw = const_cast<BYTE*>(ico.data());
-    // 先查图标目录拿到 nID（= 图像数据在 .ico 里的偏移）
-    const int nid = LookupIconIdFromDirectoryEx(raw, TRUE, 0, 0, 0);
-    if (nid <= 0 || static_cast<size_t>(nid) >= ico.size()) return nullptr;
+/**
+ * 生成指定边长的 HICON（16 = 托盘小图标，32 = 窗口 / Alt-Tab）。
+ *
+ * 从多尺寸 .ico 里挑最接近的那张再交给 CreateIconFromResourceEx，
+ * 而不是让它自己缩放 —— 我们自己画的分辨率是对齐过的，缩放反而糊。
+ */
+HICON make_app_icon(int want) {
+    static const int kSizes[] = {16, 24, 32, 48, 64, 128};
+    const auto ico = build_ico(kSizes, static_cast<int>(std::size(kSizes)));
+    if (ico.empty()) return nullptr;
+
+    const int count = static_cast<int>(ico[4] | (ico[5] << 8));
+    int best = -1;
+    int best_diff = INT_MAX;
+    for (int i = 0; i < count; i++) {
+        const int s = ico[6 + i * 16] ? ico[6 + i * 16] : 256;  // 目录里 0 表示 256
+        const int diff = std::abs(s - want);
+        if (diff < best_diff) {
+            best_diff = diff;
+            best = i;
+        }
+    }
+    if (best < 0) return nullptr;
+
+    const BYTE* e = ico.data() + 6 + best * 16;
+    DWORD len = 0;
+    DWORD off = 0;
+    std::memcpy(&len, e + 8, sizeof(len));
+    std::memcpy(&off, e + 12, sizeof(off));
+    if (static_cast<size_t>(off) + len > ico.size()) return nullptr;
+
     // ⚠️ CreateIconFromResourceEx 要的是「图像数据」指针，不是整个 .ico
-    return CreateIconFromResourceEx(raw + nid, static_cast<DWORD>(ico.size() - nid), TRUE, LR_VERSION, 0, 0, 0);
+    auto* raw = const_cast<BYTE*>(ico.data() + off);
+    return CreateIconFromResourceEx(raw, len, TRUE, LR_VERSION, want, want, 0);
 }
 
 struct Reply {
@@ -349,8 +425,11 @@ void install_crash_logger() {
 
 bool AppWindow::create(HINSTANCE instance, int show_cmd) {
     instance_ = instance;
-    // 自绘图标：项目没有 .rc 资源，系统默认图标是一块灰色方块，和蓝白配色不搭
-    icon_ = make_app_icon();
+    // 自绘图标：项目没有 .rc 资源，系统默认图标是一块灰色方块，和界面配色不搭。
+    // 大图标给窗口 / Alt-Tab，小图标给标题栏和托盘，两者分开取才能都清晰
+    icon_ = make_app_icon(GetSystemMetrics(SM_CXICON));
+    icon_small_ = make_app_icon(GetSystemMetrics(SM_CXSMICON));
+    if (!icon_small_) icon_small_ = icon_;
     log_boot("icon");
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -359,6 +438,7 @@ bool AppWindow::create(HINSTANCE instance, int show_cmd) {
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hIcon = icon_ ? icon_ : LoadIconW(instance, MAKEINTRESOURCEW(1));
+    wc.hIconSm = icon_small_ ? icon_small_ : wc.hIcon;
     wc.lpszClassName = kClassName;
     if (!RegisterClassExW(&wc)) return false;
     log_boot("wndclass");
@@ -667,8 +747,8 @@ void AppWindow::create_tray() {
     nid_.uID = 1;
     nid_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid_.uCallbackMessage = kMsgTray;
-    nid_.hIcon = icon_ ? icon_ : LoadIconW(nullptr, IDI_APPLICATION);
-    wcscpy_s(nid_.szTip, L"Vicold.MIHome");
+    nid_.hIcon = icon_small_ ? icon_small_ : (icon_ ? icon_ : LoadIconW(nullptr, IDI_APPLICATION));
+    wcscpy_s(nid_.szTip, L"桌面米家");
     if (Shell_NotifyIconW(NIM_ADD, &nid_)) {
         tray_ready_ = true;
         log_line("tray created");
@@ -726,7 +806,7 @@ void AppWindow::show_tray_menu() {
     AppendMenuW(menu, MF_STRING | (autostart_enabled() ? MF_CHECKED : MF_UNCHECKED), kTrayIdAutostart,
                 L"开机自动启动（静默到托盘）");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kTrayIdExit, L"退出 Vicold.MIHome");
+    AppendMenuW(menu, MF_STRING, kTrayIdExit, L"退出桌面米家");
 
     POINT pt{};
     GetCursorPos(&pt);

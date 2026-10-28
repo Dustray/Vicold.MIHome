@@ -95,8 +95,10 @@ private:
 
     NOTIFYICONDATAW nid_{};
     bool tray_ready_ = false;
-    // 自绘的应用图标，窗口类与托盘共用（进程退出时由系统回收）
+    // 自绘的应用图标，窗口类与托盘共用（进程退出时由系统回收）。
+    // icon_ 是大图标（32，窗口 / Alt-Tab），icon_small_ 是小图标（16，标题栏 / 托盘）
     HICON icon_ = nullptr;
+    HICON icon_small_ = nullptr;
     // 关闭窗口时是否最小化到托盘（默认开），托盘右键菜单可切换
     bool close_to_tray_ = true;
     // 首次隐藏到托盘时弹一次气泡提示，告诉用户程序还在后台跑

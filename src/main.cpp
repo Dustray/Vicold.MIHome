@@ -12,14 +12,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     vc::log_boot("dpi-aware");
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) {
-        MessageBoxW(nullptr, L"COM 初始化失败", L"Vicold.MIHome", MB_ICONERROR);
+        MessageBoxW(nullptr, L"COM 初始化失败", L"桌面米家", MB_ICONERROR);
         return 1;
     }
     vc::log_boot("com-ready");
 
     vc::AppWindow window;
     if (!window.create(instance, show_cmd)) {
-        MessageBoxW(nullptr, L"窗口创建失败", L"Vicold.MIHome", MB_ICONERROR);
+        MessageBoxW(nullptr, L"窗口创建失败", L"桌面米家", MB_ICONERROR);
         CoUninitialize();
         return 1;
     }

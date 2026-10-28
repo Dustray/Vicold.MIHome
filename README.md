@@ -1,5 +1,9 @@
 # Vicold.MIHome
 
+> 应用显示名是 **桌面米家**（窗口标题、托盘提示、标题栏、退出菜单都用这个名）。
+> exe 文件名仍是 `Vicold.MIHome.exe` —— 改文件名会让老版本写进注册表 `Run`
+> 的自启项指向一个不存在的路径，所以这里只改"看得见的名字"。
+
 米家设备的 Windows 桌面控制端，技术栈为 **C++ / Win32 + WebView2 + Vue 3**。
 与同仓库的 Python 版 MiHome-Windows 完全独立：不依赖 Python、不依赖 mijiaAPI，
 协议层用纯 C++ 重新实现。
@@ -765,16 +769,21 @@ mousedown@300,20 detail=2
   任一处改动后宿主推 `autostart.changed`，另一处跟着更新。
 - 写注册表可能被组策略/权限挡住，所以 `app.autostart` 不管成功与否都回读真实状态；
   前端只用回读值，不会出现「显示已开但实际没写进去」。
-- 托盘图标是**运行时自绘**的（蓝底白屋，和标题栏的品牌标记一致）：
-  在内存里拼一个标准 `.ico`（32bpp BGRA + alpha），再用
-  `LookupIconIdFromDirectoryEx` + `CreateIconFromResourceEx` 生成 `HICON`。
+- 托盘图标是**运行时自绘**的（米家绿方块 + 白色「M 房」标记，和标题栏的品牌标记一致）：
+  在内存里拼一个标准 `.ico`（32bpp BGRA + alpha，一次给齐 16/24/32/48/64/128 六张），
+  再按用途挑最接近的那张交给 `CreateIconFromResourceEx` 生成 `HICON`
+  （窗口 32、标题栏和托盘取 `GetSystemMetrics(SM_CXSMICON)`）。
+- 图形是**算出来的**，不是贴位图：4×4 超采样 + 圆角矩形的**有符号距离场**算描边，
+  顶边正中那道 V（米家那个「M」的尖）用「把采样点往上抬」的方式压出来；
+  底色 RGB(73,177,128) 取自米家官网 favicon，参数是照 32px 原图逐像素比着调的。
+  16/24 这类小图标单独加粗线宽、压浅 V，否则采样后糊成一团。
 
   > ⚠️ 两个 SDK 坑：本机 NuGet 版 Windows SDK 的 `winuser.h` 被裁剪过，
   > **没有 `ICONDIR` / `ICONDIRENTRY` 定义**（`CreateIconIndirect` 用不了），
   > 且 `CreateIcon` 只剩 7 参数的变体（`BYTE cPlanes, BYTE cBitsPixel`，AND 在前），
   > 实测画出来全透明。最终走 `.ico` 字节 + 标准加载 API。
-  > 另外 `CreateIconFromResourceEx` 要的是 **nID 偏移处的图像数据**，
-  > 不是整个 `.ico` 文件。
+  > 另外 `CreateIconFromResourceEx` 要的是**图像数据**指针（`.ico` 目录里那条
+  > `ICONDIRENTRY` 的 offset），不是整个 `.ico` 文件。
 
 ## 当前进度
 
