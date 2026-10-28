@@ -1,26 +1,33 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Device } from '../lib/types'
+import type { CardKeyView, Device } from '../lib/types'
 import type { Pt } from '../lib/history'
 import { devicePhoto } from '../lib/deviceImage'
 import SparkLine from './SparkLine.vue'
 
 const props = defineProps<{
   device: Device
+  /** 非开关品类（窗帘、空调…）的电源状态；开关类的状态走 `keys` */
   power: boolean | null | undefined
   /** 品类摘要（空调：制冷 27°C），仅开机时展示 */
   summary?: string
   /**
-   * 开关类设备的通断类型：
-   * `wired` 物理通断（按键驱动继电器）、`wireless` 无线开关（不接电路）。
-   * `null` 表示这台设备不是开关类（窗帘、电视这类也有 on，但不是墙面开关）。
+   * 这张卡片上的开关键。
+   *
+   * 合并后的多键面板会有 2~3 个（每一路一个，名字来自米家里的按键名），
+   * 单路开关 / 插座只有 1 个，非开关品类是空数组。
    */
-  switchKind?: 'wired' | 'wireless' | null
+  keys?: CardKeyView[]
   /** 迷你趋势线：环境读数设备的历史曲线（最近 24 小时） */
   trend?: { color: string; points: Pt[] } | null
   busy: boolean
 }>()
-const emit = defineEmits<{ (e: 'open'): void; (e: 'toggle'): void }>()
+const emit = defineEmits<{
+  (e: 'open'): void
+  (e: 'toggle'): void
+  /** 多键面板：按某一路开关（父设备下每路一个 siid） */
+  (e: 'toggle-channel', k: CardKeyView): void
+}>()
 
 const hues = [212, 152, 264, 22, 190, 340]
 const hue = computed(() => {
@@ -32,39 +39,68 @@ const hue = computed(() => {
 const initial = computed(() => (props.device.name || '?').trim().slice(0, 1).toUpperCase())
 /** 产品图（home.miot-spec.com 抓来的）；没拿到时回落成首字母块 */
 const photo = computed(() => devicePhoto(props.device.model))
-const hasPower = computed(() => props.power !== undefined && props.power !== null)
 
-/** 是开关类设备：卡片上换成模拟真实的翘板按键，并在按键上标注通断类型 */
-const isSwitch = computed(() => props.switchKind === 'wired' || props.switchKind === 'wireless')
-const wireless = computed(() => props.switchKind === 'wireless')
+/** 开关键：0 = 非开关品类，1 = 单路（沿用扁平翘板），≥2 = 多键面板 */
+const keys = computed<CardKeyView[]>(() => props.keys || [])
+const multi = computed(() => keys.value.length > 1)
+const single = computed<CardKeyView | null>(() => (keys.value.length === 1 ? keys.value[0] : null))
+
+/** 通电的通路数（无线模式的键不驱动电路，措辞用「路通电」而不是「路开」） */
+const activeCount = computed(() => keys.value.filter((k) => k.on === true).length)
+
+/** 是开关类设备（单路/多路都算）：卡片上换成开关控件，标签也不再走品类摘要 */
+const isSwitch = computed(() => keys.value.length > 0)
+
+/**
+ * 通用胶囊开关只给**非开关品类**（窗帘、电视…）用。
+ *
+ * ⚠️ 必须显式排除 `keys.length > 0`：Vue 的 Boolean prop 在**没传**的时候会被转成
+ * `false`（不是 `undefined`），只看 `power !== undefined` 会在多键卡片上多长出一个
+ * 空开关 —— 三键面板变成「三个胶囊 + 一个点不动的开关」。
+ */
+const hasPower = computed(
+  () => keys.value.length === 0 && props.power !== undefined && props.power !== null
+)
 
 /**
  * 底部标签。
- * - 有开关的设备：关了就显示"已关闭"，开了才给品类摘要（如「制冷 27°C」）；
+ * - 多键面板：直接报「几路通电」，比列三个状态更省地方；
+ * - 单路开关：关了就显示"已关闭"，开了才给品类摘要（如「制冷 27°C」）；
  * - 纯读数设备（温湿度计没有 on 属性）：没有开关可讲，直接展示读数。
  */
 const tagText = computed(() => {
-  if (hasPower.value) {
+  if (multi.value) return `${activeCount.value}/${keys.value.length} 路通电`
+  if (single.value) {
     // 无线通道即使 on=true 也不通电，写"已开启"会让人以为灯亮了
-    if (wireless.value) return '不接电路'
+    if (single.value.on === null) return '不接电路'
+    if (single.value.wireless) return single.value.on ? '无线模式' : '不接电路'
+    if (!single.value.on) return '已关闭'
+    return props.summary || '已开启'
+  }
+  if (hasPower.value) {
     if (!props.power) return '已关闭'
     return props.summary || '已开启'
   }
   // 纯无线开关没有可读的通断状态，说明它是什么比抛一个"详情"更有用
-  if (isSwitch.value && wireless.value) return '不接电路'
   return props.summary || '详情'
 })
 
 /** 无开关时标签独占整行，读数才不会被截断 */
-const wideTag = computed(() => !hasPower.value && !!props.summary)
+const wideTag = computed(() => !isSwitch.value && !hasPower.value && !!props.summary)
 
 /** 灰底只用在"没有有效读数"的情况，有读数就用强调色 */
 const tagMuted = computed(() => {
-  // 无线通道的"不接电路"是性质说明，不是通电状态，别用代表"已开启"的绿底
-  if (wireless.value) return true
+  if (multi.value) return activeCount.value === 0
+  if (single.value) return single.value.on !== true || single.value.wireless
   if (hasPower.value) return !props.power
   return !props.summary
 })
+
+/** 每一路的悬停说明：名字 + 状态 + 通不通电路 */
+function keyTitle(k: CardKeyView): string {
+  const state = k.on === null ? '无线遥控' : k.on ? '已开启' : '已关闭'
+  return k.wireless && k.on !== null ? `${k.name} · ${state}（无线模式，不驱动继电器）` : `${k.name} · ${state}`
+}
 </script>
 
 <template>
@@ -92,27 +128,43 @@ const tagMuted = computed(() => {
       <SparkLine :points="trend.points" :color="trend.color" />
     </div>
 
+    <!-- 多键面板：每一路一个小胶囊，横排。合并前这里会变成 N 张卡片 -->
+    <div v-if="multi" class="keys">
+      <button
+        v-for="k in keys"
+        :key="k.key"
+        class="kchip"
+        :class="{ on: k.on === true, wireless: k.wireless && k.on !== null, busy: k.busy, static: k.on === null }"
+        :disabled="!device.online || k.busy || k.on === null"
+        :title="keyTitle(k)"
+        @click.stop="emit('toggle-channel', k)"
+      >
+        <span class="kd" />
+        <span class="kn">{{ k.name }}</span>
+      </button>
+    </div>
+
     <div class="foot">
       <span class="tag" :class="{ muted: tagMuted, wide: wideTag }" :title="tagText">{{ tagText }}</span>
 
-      <!-- 开关类：扁平化开关，一眼看出是通断开关，并标注通断类型 -->
+      <!-- 单路开关：扁平化开关，一眼看出是通断开关，并标注通断类型 -->
       <button
-        v-if="hasPower && isSwitch"
+        v-if="single && single.on !== null"
         class="rocker"
-        :class="{ on: !!power, wireless, busy }"
-        :disabled="!device.online || busy"
-        :title="wireless ? '无线开关：不接入电路' : '物理通断：直接控制电路'"
-        @click.stop="emit('toggle')"
+        :class="{ on: single.on === true, wireless: single.wireless, busy: single.busy || busy }"
+        :disabled="!device.online || single.busy"
+        :title="single.wireless ? '无线开关：不接入电路' : '物理通断：直接控制电路'"
+        @click.stop="emit('toggle-channel', single)"
       >
         <svg class="rk-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
           <path d="M12 3.4v7.8" />
           <path d="M7.2 6.9a7 7 0 1 0 9.6 0" />
         </svg>
-        <span class="rk-tag">{{ wireless ? '无线' : '通断' }}</span>
+        <span class="rk-tag">{{ single.wireless ? '无线' : '通断' }}</span>
       </button>
 
       <!-- 纯无线开关（遥控器）：没有可写 on，按键点不动，只做类型标注 -->
-      <span v-else-if="isSwitch && wireless" class="rocker static" title="无线开关：不接入电路，按键事件在本地触发">
+      <span v-else-if="single" class="rocker static" title="无线开关：不接入电路，按键事件在本地触发">
         <svg class="rk-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
           <path d="M12 3.4v7.8" />
           <path d="M7.2 6.9a7 7 0 1 0 9.6 0" />
@@ -138,6 +190,100 @@ const tagMuted = computed(() => {
   margin-bottom: -6px;
   padding-left: 2px;
   opacity: 0.9;
+}
+
+/* ---------------------------------------------- 多键面板的每一路 */
+/* 三键开关合并成一张卡片后，这里是唯一的操作入口：每一路一颗小胶囊，
+   名字用米家里的按键名（玄关射灯 / 倒台射灯），通电整颗变绿。
+   做成横排胶囊而不是三行开关，是为了不把卡片撑高一倍。 */
+.keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: -10px;
+  position: relative;
+  z-index: 1;
+}
+
+.kchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 9px 3px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-2);
+  background: var(--surface-3);
+  box-shadow: inset 0 0 0 1px var(--border);
+  cursor: pointer;
+  transition:
+    background 0.22s var(--ease),
+    box-shadow 0.22s var(--ease),
+    color 0.22s var(--ease);
+}
+
+.kd {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-3);
+  transition: background 0.22s var(--ease);
+}
+
+.kn {
+  max-width: 84px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+.kchip:hover:not(:disabled) {
+  box-shadow: inset 0 0 0 1px var(--text-3);
+}
+
+.kchip:active:not(:disabled) {
+  transform: scale(0.96);
+  transition-duration: 0.08s;
+}
+
+.kchip.on {
+  color: #fff;
+  background: var(--grad-accent);
+  box-shadow:
+    inset 0 0 0 1px rgba(23, 178, 106, 0.5),
+    0 0 8px rgba(23, 178, 106, 0.18);
+}
+
+.kchip.on .kd {
+  background: #fff;
+}
+
+/* 无线模式：紫色，与"通电"区分（这三路不驱动继电器） */
+.kchip.wireless {
+  color: rgb(104, 74, 196);
+  box-shadow: inset 0 0 0 1px rgba(122, 88, 214, 0.34);
+}
+
+.kchip.wireless.on {
+  color: #fff;
+  background: linear-gradient(135deg, #a78bfa 0%, #7c5cf0 55%, #6a48e0 100%);
+}
+
+.kchip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+[data-theme='dark'] .kchip {
+  background: #1b2635;
+}
+
+[data-theme='dark'] .kchip.wireless {
+  color: #b39bf5;
+  box-shadow: inset 0 0 0 1px rgba(160, 132, 240, 0.32);
 }
 
 .device-card {

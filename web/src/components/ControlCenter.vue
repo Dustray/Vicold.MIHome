@@ -290,7 +290,8 @@ function adjUnit(adj: EnvAdjust) {
         <!-- 物理通断开关 -->
         <div v-if="g.switches.length" class="grp-sec">
           <span class="sec-cap">物理通断开关</span>
-          <div v-for="c in g.switches" :key="c.device.did" class="item">
+          <!-- 每个 v-for 的 key 必须带 siid：合并后的多键面板一台设备会出好几行 -->
+          <div v-for="c in g.switches" :key="`${c.device.did}:${c.siid}`" class="item">
             <div class="row">
               <span class="ico swt">
                 <svg viewBox="0 0 24 24" fill="none">

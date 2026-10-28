@@ -11,8 +11,8 @@ import { invoke, on, host } from './lib/host'
 import { getSettings, setAutostart } from './lib/settings'
 import { ensureDeviceImages } from './lib/deviceImage'
 import { EDGE_CURSOR, edgeDirAt } from './lib/edgeResize'
-import { findOnProp, isPowerProp, physicalDid } from './lib/device'
-import { airProps, channelWireless, fishTankProps, isAirConditioner, isAirMonitor, isFishTank, isLight, isSpeaker, isTempHumiditySensor, mainPollutant, propBy, sensorProps, speakerProps, switchChannels, switchForm } from './lib/spec'
+import { channelKeyOf, findOnProp, isPowerProp, mergeSplitDevices, onPropOfSiid, physicalDid } from './lib/device'
+import { airProps, channelWireless, fishTankProps, isAirConditioner, isAirMonitor, isFishTank, isLight, isSpeaker, isTempHumiditySensor, mainPollutant, propBy, sensorProps, speakerProps, switchChannels, switchForm, type SwitchChannel } from './lib/spec'
 import { valueLabel } from './lib/zh'
 import {
   buildControls,
@@ -32,7 +32,7 @@ import {
 import { backfillCloud, BACKFILL_HOURS, flush as flushHistory, load as loadHistory, startAutoFlush, startNowTicker, stopAutoFlush, stopNowTicker } from './lib/history'
 import { hasCustomOrder, moveRoom as moveRoomOrder, resetRoomOrder, sortRooms } from './lib/roomOrder'
 import { useDragSort } from './lib/sortable'
-import type { Device, Home, PropDef, Scene, Spec } from './lib/types'
+import type { CardKeyView, Device, Home, PropDef, Scene, Spec } from './lib/types'
 
 // ---------------- 主题 ----------------
 const theme = ref<'light' | 'dark'>('light')
@@ -76,7 +76,7 @@ async function startLogin() {
 async function logout() {
   await invoke('auth.logout').catch(() => undefined)
   authed.value = false
-  devices.value = []
+  rawDevices.value = []
   startLogin()
 }
 
@@ -111,16 +111,33 @@ async function toggleAutostart() {
 }
 
 // ---------------- 设备 ----------------
-const devices = ref<Device[]>([])
+/**
+ * 云端原始设备清单。
+ *
+ * ⚠️ 这里**保留拆分后的原始条目**（一台三键开关=父设备+2~3 条 `did.sN`），
+ *    界面上一律用下面合并过的 `devices`。保留原样是因为：
+ *    虚拟子设备的 did 同时是「每一路开关状态」的键，也是「这一路叫什么」的
+ *    唯一来源（父设备规格里只有「左键/中键/右键」）。
+ */
+const rawDevices = ref<Device[]>([])
+/** 合并后的一台物理设备一条（多键面板的每一路挂在 `channels` 上） */
+const devices = computed(() => mergeSplitDevices(rawDevices.value))
 const loading = ref(false)
 const keyword = ref('')
 const activeRoom = ref<string>('all')
+/**
+ * 通断状态表。
+ *
+ * 键是**通道键**（`channelKeyOf`）：多键面板按虚拟子设备 did（`xxx.s2`）分别存，
+ * 单路设备就是设备自己的 did。合并成一张卡片后，三个键仍然各有各的状态，
+ * 抽屉里改哪一路、卡片上就跟着变。
+ */
 const powers = reactive<Record<string, boolean | null>>({})
 /**
  * 开关通道模式：0 = 有线和无线（物理通断），1 = 无线开关。
  *
  * 这是规格里唯一能区分「按键是不是真的通断电路」的权威字段，
- * 卡片上的「物理通断 / 无线开关」标注就靠它。
+ * 卡片上的「物理通断 / 无线开关」标注就靠它。键同 `powers`（按路存）。
  */
 const switchMode = reactive<Record<string, number>>({})
 /** 空调卡片摘要：模式 + 目标温度（其余品类不读） */
@@ -243,7 +260,9 @@ const filtered = computed(() => {
       }
     }
     if (!kw) return true
-    return d.name.toLowerCase().includes(kw) || d.model.toLowerCase().includes(kw)
+    // 合并后的多键面板要能按「某一路的名字」搜到（用户记的是「玄关射灯」）
+    const names = [d.name, d.model, ...(d.channels || []).map((c) => c.name)]
+    return names.some((n) => n.toLowerCase().includes(kw))
   })
   // 米家返回的设备清单每次顺序都不同，直接渲染会让卡片位置每次刷新都乱跳，
   // 用户找不到设备。按「房间顺序 + 设备名」固定下来，位置就稳定了。
@@ -259,7 +278,7 @@ const filtered = computed(() => {
 async function loadDevices() {
   loading.value = true
   try {
-    devices.value = await invoke<Device[]>('device.list')
+    rawDevices.value = await invoke<Device[]>('device.list')
     await loadHomes()
     void ensureSpecs()
     // 产品图：宿主抓一次落盘，之后本地加载（首次启动几十台设备要几秒）
@@ -402,23 +421,45 @@ async function hydratePowers() {
         continue
       }
 
-      // 多键面板的每个虚拟子设备只对应一路 on，不能全都要
-      const onProp = findOnProp(spec, device.did)
-      if (!onProp) continue
-      items.push({ did: pDid, uiDid, siid: onProp.siid, piid: onProp.piid, kind: 'on' })
+      // 合并后的多键面板：**每一路**都要读各自那一格 on（siid 各不相同），
+      // 状态按通道键（虚拟子设备 did）分开存；单路设备走下面那条老路。
+      const chans = device.channels && device.channels.length ? device.channels : null
+      if (chans) {
+        for (const ch of chans) {
+          const on = onPropOfSiid(spec, ch.siid)
+          if (!on) continue
+          items.push({ did: pDid, state: ch.did, siid: on.siid, piid: on.piid, kind: 'on' })
+          // 顺带读这一路的通道模式：卡片要据此标注「物理通断 / 无线开关」。
+          // mode 只 read/notify 的机型（少数固件）读不到，就按物理通断兜底。
+          const mode = propBy(spec, 'mode', ch.siid)
+          if (mode && mode.rw.includes('r')) {
+            items.push({
+              did: pDid,
+              state: ch.did,
+              siid: mode.siid,
+              piid: mode.piid,
+              kind: 'mode',
+              key: mode.name,
+            })
+          }
+        }
+      } else {
+        // 单路设备（一个 on）或旧固件没有拆分条目的多键面板：只读第一路
+        const onProp = findOnProp(spec, device.did)
+        if (!onProp) continue
+        items.push({ did: pDid, state: uiDid, siid: onProp.siid, piid: onProp.piid, kind: 'on' })
 
-      // 顺带读这一路的通道模式：卡片要据此标注「物理通断 / 无线开关」。
-      // mode 只 read/notify 的机型（少数固件）读不到，就按物理通断兜底。
-      const chMode = propBy(spec, 'mode', onProp.siid)
-      if (chMode && chMode.rw.includes('r')) {
-        items.push({
-          did: pDid,
-          uiDid,
-          siid: chMode.siid,
-          piid: chMode.piid,
-          kind: 'mode',
-          key: chMode.name,
-        })
+        const chMode = propBy(spec, 'mode', onProp.siid)
+        if (chMode && chMode.rw.includes('r')) {
+          items.push({
+            did: pDid,
+            state: uiDid,
+            siid: chMode.siid,
+            piid: chMode.piid,
+            kind: 'mode',
+            key: chMode.name,
+          })
+        }
       }
 
       // 空调卡片额外读「模式 + 目标温度」，让卡片直接显示「制冷 27°C」
@@ -797,8 +838,11 @@ function cardSummary(device: Device): string {
 
 interface PowerItem {
   did: string
-  /** 界面上的 did：虚拟子设备按子 did 存状态，请求一律用父 did */
-  uiDid: string
+  /**
+   * 状态键（`powers` / `switchMode` 的键）：多键面板按虚拟子设备 did 分开存，
+   * 单路设备就是设备自己的 did。请求一律用父 did + 这一路的 siid。
+   */
+  state: string
   siid: number
   piid: number
   kind: 'on' | 'mode'
@@ -807,26 +851,51 @@ interface PowerItem {
 }
 
 /**
- * 卡片上开关按键的类型标注。
+ * 卡片上要渲染的开关键。
  *
- * `wired` = 物理通断（按键直接驱动继电器），`wireless` = 无线开关
- * （不接电路，只在本地发事件）。null 表示这台设备不是开关类。
+ * - 合并后的多键面板：每一路一个键（名字来自虚拟子设备「玄关射灯」），
+ *   卡片上横排成小胶囊，一个卡片就能分别开关三路；
+ * - 单路开关 / 插座 / 无线遥控：一个键，沿用原来的扁平翘板按钮；
+ * - 非开关品类（窗帘、空调……）：空数组，卡片走通用胶囊开关。
  *
  * 判据在 spec.ts 里和面板共用同一套（`switchChannels` + `channelWireless`），
  * 所以抽屉里写「无线开关」时，卡片上不会是「物理通断」。
  */
-function cardSwitchKind(device: Device): 'wired' | 'wireless' | null {
+function cardKeys(device: Device): CardKeyView[] {
   const spec = specs.get(device.did)
-  if (!spec) return null
-  const form = switchForm(spec)
-  if (!form) return null
-  if (form === 'remote') return 'wireless'
+  if (!spec || !switchForm(spec)) return []
+  const all = switchChannels(spec, null)
+
+  const view = (siid: number, key: string, name: string, fallback: SwitchChannel | null): CardKeyView => {
+    const ch = all.find((c) => c.siid === siid) || fallback
+    if (!ch) return { key, siid, name, on: null, wireless: true, busy: !!specBusy[key] }
+    const raw = switchMode[key]
+    const wireless = ch.on
+      ? channelWireless(ch, ch.mode && raw !== undefined ? { [ch.mode.name]: raw } : {})
+      : true
+    const val = powers[key]
+    return {
+      key,
+      siid: ch.siid,
+      name,
+      on: ch.on ? (typeof val === 'boolean' ? val : null) : null,
+      wireless,
+      busy: !!specBusy[key],
+    }
+  }
+
+  const chans = device.channels && device.channels.length ? device.channels : null
+  if (chans) {
+    return chans.map((c) => {
+      // 子设备的 siid 一定在规格里有对应的开关模块；对不上就按顺序兜底
+      const fallback = switchChannels(spec, c.did)[0] || null
+      return view(c.siid, c.did, c.name, fallback)
+    })
+  }
+
   const ch = switchChannels(spec, device.did)[0]
-  if (!ch || !ch.on) return 'wireless'
-  if (!ch.mode) return 'wired'
-  const raw = switchMode[device.did]
-  if (raw === undefined) return 'wired'
-  return channelWireless(ch, { [ch.mode.name]: raw }) ? 'wireless' : 'wired'
+  if (!ch) return []
+  return [view(ch.siid, device.did, device.name, ch)]
 }
 
 /**
@@ -858,18 +927,12 @@ function cardTrend(device: Device): { color: string; points: { t: number; v: num
  * 父设备面板上每一路的真实名称。
  *
  * 多键开关在云端被拆成虚拟子设备（`xxx.s2`「主灯」、`.s3`「窗帘」），
- * 规格里只写了「左键 / 中键 / 右键」。用户认的是子设备名，所以按
- * `did.s{siid}` 去设备列表里捞。
+ * 规格里只写了「左键 / 中键 / 右键」。用户认的是子设备名，
+ * 合并时已经把名字挂在 `device.channels` 上，这里直接摊平成 siid → 名字。
  */
 function channelNamesFor(device: Device): Record<number, string> {
   const out: Record<number, string> = {}
-  const parent = device.did.replace(/\.s\d+$/, '')
-  for (const d of devices.value) {
-    const m = /\.s(\d+)$/.exec(d.did)
-    if (!m) continue
-    if (d.did.replace(/\.s\d+$/, '') !== parent) continue
-    out[Number(m[1])] = d.name
-  }
+  for (const ch of device.channels || []) out[ch.siid] = ch.name
   return out
 }
 
@@ -897,10 +960,10 @@ async function flushPowerBatch(items: PowerItem[]) {
       if (it.kind === 'on') {
         // 必须拿到明确布尔值才写：设备偶发不返回该属性时，`!!undefined`
         // 会把开着的设备误刷成「已关闭」
-        if (typeof row.value === 'boolean') powers[it.uiDid] = row.value
+        if (typeof row.value === 'boolean') powers[it.state] = row.value
       } else {
         const n = Number(row.value)
-        if (Number.isFinite(n)) switchMode[it.uiDid] = n
+        if (Number.isFinite(n)) switchMode[it.state] = n
       }
     }
   } catch {
@@ -926,6 +989,30 @@ async function togglePower(device: Device) {
   }
 }
 
+/**
+ * 卡片上按「某一路」开关。
+ *
+ * 合并后一张三键卡片上有三个开关，必须用**这一路自己的 siid** 下发，
+ * 状态也写回这一路的通道键；拿 `findOnProp(did)` 会永远开关第一路
+ * （合并前按 `did.sN` 后缀取，合并后父 did 没有后缀，只能靠 siid）。
+ */
+async function toggleChannel(device: Device, k: CardKeyView) {
+  const spec = await fetchSpec(device)
+  const onProp = onPropOfSiid(spec, k.siid)
+  if (!onProp || !device.online) return
+  const next = !k.on
+  powers[k.key] = next
+  specBusy[k.key] = true
+  try {
+    await invoke('prop.set', { did: physicalDid(device.did), siid: onProp.siid, piid: onProp.piid, value: next })
+  } catch (e) {
+    powers[k.key] = k.on ?? null
+    flash((e as Error).message)
+  } finally {
+    specBusy[k.key] = false
+  }
+}
+
 // ---------------- 详情抽屉 ----------------
 const current = ref<Device | null>(null)
 const currentSpec = ref<Spec | null>(null)
@@ -934,6 +1021,33 @@ const currentValues = ref<Record<string, unknown>>({})
 const currentChannelNames = ref<Record<number, string>>({})
 const detailLoading = ref(false)
 const busyProp = ref('')
+
+/**
+ * 把读到的属性回填成卡片上的通断状态。
+ *
+ * 多键面板每一路各取自己那格 `on`（siid 各不相同），状态写回**通道键**；
+ * 单路设备就是整台设备一个键。合并前这里是按 `did.sN` 后缀取，
+ * 合并后父 did 没有后缀，只能按 siid 取。
+ */
+function syncPowerStates(device: Device, spec: Spec, values: Record<string, unknown>) {
+  const chans = device.channels && device.channels.length ? device.channels : null
+  if (chans) {
+    for (const ch of chans) {
+      const on = onPropOfSiid(spec, ch.siid)
+      const v = on ? values[on.name] : undefined
+      if (typeof v === 'boolean') powers[ch.did] = v
+      const mode = propBy(spec, 'mode', ch.siid)
+      if (mode && values[mode.name] !== undefined) {
+        const n = Number(values[mode.name])
+        if (Number.isFinite(n)) switchMode[ch.did] = n
+      }
+    }
+    return
+  }
+  const onProp = findOnProp(spec, device.did)
+  const onValue = onProp ? values[onProp.name] : undefined
+  if (typeof onValue === 'boolean') powers[device.did] = onValue
+}
 
 async function openDevice(device: Device) {
   // 面板要靠房间环境读数兜底显示"房间现在几度"，没拉过就先补一次
@@ -965,10 +1079,7 @@ async function openDevice(device: Device) {
     })
     currentValues.value = values
     syncReadings(device.did, spec, values)
-    // 多键面板要取对应那一路的开关值
-    const onProp = findOnProp(spec, device.did)
-    const onValue = onProp ? values[onProp.name] : undefined
-    if (typeof onValue === 'boolean') powers[device.did] = onValue
+    syncPowerStates(device, spec, values)
   } catch (e) {
     flash((e as Error).message)
   } finally {
@@ -1032,8 +1143,10 @@ async function setProp(def: PropDef, value: unknown) {
   const device = current.value
   if (!device) return
   const prev = currentValues.value[def.name]
+  // 状态键按「这一路」算：合并后的三键面板在抽屉里改哪一路，卡片上就是哪一路
+  const chKey = channelKeyOf(device, def.siid)
   currentValues.value = { ...currentValues.value, [def.name]: value }
-  if (isPowerProp(def)) powers[device.did] = !!value
+  if (isPowerProp(def)) powers[chKey] = !!value
   // 卡片摘要跟随抽屉里的操作实时变化
   const ac = acState[device.did]
   if (ac) {
@@ -1050,24 +1163,24 @@ async function setProp(def: PropDef, value: unknown) {
   syncTankSummary(device.did, def, value)
   // 开关通道模式改了（有线和无线 ↔ 无线），卡片的通断标注要立刻跟着变
   const swSpec = specs.get(device.did)
-  const prevMode = switchMode[device.did]
+  const prevMode = switchMode[chKey]
   if (def.base_name === 'mode' && swSpec && switchForm(swSpec)) {
     const n = Number(value)
-    if (Number.isFinite(n)) switchMode[device.did] = n
+    if (Number.isFinite(n)) switchMode[chKey] = n
   }
   busyProp.value = def.name
   try {
     await invoke('prop.set', { did: physicalDid(device.did), siid: def.siid, piid: def.piid, value })
   } catch (e) {
     currentValues.value = { ...currentValues.value, [def.name]: prev }
-    if (isPowerProp(def)) powers[device.did] = !!prev
+    if (isPowerProp(def)) powers[chKey] = !!prev
     syncLightSummary(device.did, def.base_name, prev)
     if (def.base_name === 'mode') syncLightMode(device.did, def, prev)
     syncSpeakerSummary(device.did, def, prev)
     syncTankSummary(device.did, def, prev)
     if (def.base_name === 'mode' && swSpec && switchForm(swSpec)) {
-      if (prevMode === undefined) delete switchMode[device.did]
-      else switchMode[device.did] = prevMode
+      if (prevMode === undefined) delete switchMode[chKey]
+      else switchMode[chKey] = prevMode
     }
     flash((e as Error).message)
   } finally {
@@ -1140,6 +1253,8 @@ async function refreshValues() {
     })
     currentValues.value = next
     syncReadings(device.did, spec, next)
+    // 设备在别处被按过（或本地按键改了这一路）时，卡片上的开关也要跟上
+    syncPowerStates(device, spec, next)
   } catch {
     // 刷新失败就保持现有读数，不打断操作
   }
@@ -1279,8 +1394,10 @@ async function toggleEnvControl(c: EnvControl) {
   const device = c.device
   const spec = specs.get(device.did)
   if (!spec) return
-  const next = !powers[device.did]
-  powers[device.did] = next
+  // 合并后的多键面板：控制中心那一行代表第一路，状态键要跟着 siid 走
+  const key = channelKeyOf(device, c.siid)
+  const next = !powers[key]
+  powers[key] = next
   specBusy[device.did] = true
   try {
     await invoke('prop.set', {
@@ -1290,7 +1407,7 @@ async function toggleEnvControl(c: EnvControl) {
       value: next
     })
   } catch (e) {
-    powers[device.did] = !next
+    powers[key] = !next
     flash((e as Error).message)
   } finally {
     specBusy[device.did] = false
@@ -1685,11 +1802,12 @@ onUnmounted(() => {
             :device="d"
             :power="powers[d.did]"
             :summary="cardSummary(d)"
-            :switch-kind="cardSwitchKind(d)"
+            :keys="cardKeys(d)"
             :trend="cardTrend(d)"
             :busy="!!specBusy[d.did]"
             @open="openDevice(d)"
             @toggle="togglePower(d)"
+            @toggle-channel="(k) => toggleChannel(d, k)"
           />
           <div v-if="!filtered.length && !loading" class="blank">这里还没有设备</div>
         </div>

@@ -1,4 +1,4 @@
-import type { PropDef, Spec } from './types'
+import type { Device, DeviceChannel, PropDef, Spec } from './types'
 
 /**
  * 虚拟子设备的 did 后缀 → siid。
@@ -71,3 +71,90 @@ export function findOnProp(spec: Spec | null | undefined, did?: string | null): 
   const idx = gang - 2
   return onProps[idx] ?? onProps[0]
 }
+
+/** 指定 siid 那一路的电源开关属性（合并后的多键面板按路取） */
+export function onPropOfSiid(spec: Spec | null | undefined, siid: number): PropDef | null {
+  if (!spec) return null
+  return (
+    spec.properties.find((p) => isPowerProp(p) && p.rw.includes('w') && p.siid === siid) || null
+  )
+}
+
+/**
+ * 合并云端拆出来的虚拟子设备，一台物理设备只留一条。
+ *
+ * 实测（2026-10-28，113 条条目 / 77 台物理设备）：多键面板在云端不是
+ * 「一台设备多个键」，而是**父设备 + 每键一条 `did.sN`**：
+ *
+ * ```
+ * 946987819        玄关三键开关     ← 父设备，真正的商品
+ * 946987819.s2     灯总控          ← 第 1 路（siid 2）
+ * 946987819.s3     倒台射灯        ← 第 2 路（siid 3）
+ * 946987819.s4     玄关射灯        ← 第 3 路（siid 4）
+ * ```
+ *
+ * 直接渲染就是「一个三键开关占 4 张卡片」，而且父卡片上那个开关永远只控制
+ * 第一路。合并后卡片按 `channels` 渲染每一路，抽屉里仍是完整面板。
+ *
+ * 合并规则：
+ * - 以 `physicalDid()` 分组，**以父设备（无 `.sN` 后缀）为准**：名称、房间、
+ *   在线状态、规格都对得上商品本身；
+ * - 子设备按 siid **升序**排（云端返回顺序是乱的，`dids` 里也是乱的）；
+ * - 只有父设备、没有子设备（老固件/未拆分的账号）→ 原样返回，等价于单路；
+ * - 只有子设备、没有父设备 → **不合并**（凭子设备名拼不出商品名，
+ *   强行造一个父设备会让用户看到一台自己不认识的设备）。
+ */
+export function mergeSplitDevices(list: Device[]): Device[] {
+  const order: string[] = []
+  const groups = new Map<string, Device[]>()
+  for (const d of list) {
+    const key = physicalDid(d.did)
+    let g = groups.get(key)
+    if (!g) {
+      g = []
+      groups.set(key, g)
+      order.push(key)
+    }
+    g.push(d)
+  }
+
+  const out: Device[] = []
+  for (const key of order) {
+    const members = groups.get(key)!
+    const parent = members.find((m) => gangOf(m.did) === null)
+    const children = members.filter((m) => gangOf(m.did) !== null)
+    if (!parent || !children.length) {
+      // 没得合并：把该组原样放回（通常只有一个成员）
+      for (const m of members) out.push(m)
+      continue
+    }
+    const channels: DeviceChannel[] = children
+      .map((c) => ({ did: c.did, siid: gangOf(c.did)!, name: c.name }))
+      .sort((a, b) => a.siid - b.siid)
+    out.push({
+      ...parent,
+      // 父设备自己可能落在「未分配」（roomlist 只登记了子设备），用子设备兜底
+      room_id: parent.room_id || children[0].room_id,
+      room_name: parent.room_name || children[0].room_name,
+      channels
+    })
+  }
+  return out
+}
+
+/**
+ * 读取/写入某一路状态时用的键。
+ *
+ * 多键面板用虚拟子设备 did（`xxx.s2`），单路设备用设备自己的 did ——
+ * 这样 `powers` / `switchMode` 两张状态表的键在卡片、抽屉、环境页之间通用。
+ * 传 `siid` 时取那一路，不传就取第一路。
+ */
+export function channelKeyOf(device: Device, siid?: number): string {
+  const list = device.channels
+  if (list && list.length) {
+    const hit = siid === undefined ? list[0] : list.find((c) => c.siid === siid)
+    return (hit ?? list[0]).did
+  }
+  return device.did
+}
+

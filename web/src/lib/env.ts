@@ -13,7 +13,8 @@ import { record as historyRecord, series as historySeries } from './history'
 import { valueLabel } from './zh'
 import type { Pt } from './history'
 import type { Device, PropDef, Spec } from './types'
-import { isAirConditioner, isLight, propBy, switchChannels, switchForm } from './spec'
+import { channelWireless, isAirConditioner, isLight, propBy, switchChannels, switchForm } from './spec'
+import { channelKeyOf } from './device'
 
 // ---------------------------------------------------------------------------
 // 指标定义
@@ -828,30 +829,6 @@ function enumAdjust(def: PropDef, value: unknown, label: string): EnvAdjust | nu
   }
 }
 
-/**
- * 某个开关设备的这一路是「物理通断」还是「无线开关」。
- *
- * 判据与卡片/抽屉完全一致（spec.ts 的 switchChannels + mode 枚举），
- * 免得环境页说「物理通断」而抽屉里写「无线开关」。
- */
-export function channelIsWireless(
-  spec: Spec,
-  did: string,
-  modeValue: number | undefined
-): boolean {
-  const form = switchForm(spec)
-  if (form === 'remote') return true
-  const ch = switchChannels(spec, did)[0]
-  if (!ch || !ch.on) return true
-  if (!ch.mode) return false
-  if (modeValue === undefined) return false
-  const hit = ch.mode.value_list?.find((v) => String(v.value) === String(modeValue))
-  if (!hit) return String(modeValue) === '1'
-  const zh = hit.desc_zh || ''
-  if (zh) return /无线/.test(zh) && !/有线/.test(zh)
-  return /^wireless$/i.test((hit.description || '').trim())
-}
-
 /** 房间里的吸顶灯 / 物理通断开关 / 空调，供环境页做快捷开关 */
 export function buildControls(
   devices: Device[],
@@ -867,7 +844,8 @@ export function buildControls(
   for (const d of devices) {
     const spec = specs.get(d.did)
     if (!spec) continue
-    const on = states.powers[d.did] ?? null
+    // 合并后的多键面板按「这一路」的状态键取值；单路设备就是设备自己的 did
+    const onOf = (siid: number) => states.powers[channelKeyOf(d, siid)] ?? null
 
     if (isAirConditioner(spec)) {
       const onProp = spec.properties.find((p) => p.base_name === 'on' && p.rw.includes('w'))
@@ -896,7 +874,7 @@ export function buildControls(
         piid: onProp.piid,
         online: d.online,
         wireless: false,
-        on,
+        on: onOf(onProp.siid),
         detail,
         adjust
       })
@@ -935,32 +913,41 @@ export function buildControls(
         piid: onProp.piid,
         online: d.online,
         wireless: false,
-        on,
+        on: onOf(onProp.siid),
         detail: parts.join(' · '),
         adjust
       })
       continue
     }
 
-    // 开关类：只留物理通断那一路
+    // 开关类：**每一路各给一条**（合并成一张设备卡片之后，控制中心仍按路列，
+    // 一行一个「玄关射灯」比一行「玄关三键开关」有用得多）。只留物理通断那几路。
     const form = switchForm(spec)
     if (!form || form === 'remote') continue
-    const ch = switchChannels(spec, d.did)[0]
-    if (!ch || !ch.on) continue
-    if (channelIsWireless(spec, d.did, states.switchMode[d.did])) continue
-    out.push({
-      device: d,
-      kind: 'switch',
-      name: d.name,
-      roomName: d.room_name || '未分配',
-      siid: ch.on.siid,
-      piid: ch.on.piid,
-      online: d.online,
-      wireless: false,
-      on,
-      detail: '',
-      adjust: []
-    })
+    const names = new Map<number, string>()
+    for (const c of d.channels || []) names.set(c.siid, c.name)
+    for (const ch of switchChannels(spec, d.did)) {
+      if (!ch.on) continue
+      const chKey = channelKeyOf(d, ch.on.siid)
+      const wireless = channelWireless(
+        ch,
+        ch.mode ? { [ch.mode.name]: states.switchMode[chKey] } : {}
+      )
+      if (wireless) continue
+      out.push({
+        device: d,
+        kind: 'switch',
+        name: names.get(ch.on.siid) || d.name,
+        roomName: d.room_name || '未分配',
+        siid: ch.on.siid,
+        piid: ch.on.piid,
+        online: d.online,
+        wireless: false,
+        on: onOf(ch.on.siid),
+        detail: '',
+        adjust: []
+      })
+    }
   }
   // 顺序：吸顶灯 → 物理通断开关 → 空调，同类内保持房间里的原有次序
   const order: Record<EnvControlKind, number> = { light: 0, switch: 1, ac: 2 }
