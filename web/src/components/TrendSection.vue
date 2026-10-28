@@ -50,7 +50,7 @@ function unitOf(k: MetricKey) {
     <header class="ts-head">
       <div class="ts-title">
         <h3>{{ title || '历史曲线' }}</h3>
-        <span class="ts-sub">本机采样记录</span>
+        <span class="ts-sub">仅保存在本机</span>
       </div>
       <div class="ts-hours">
         <button
@@ -94,7 +94,7 @@ function unitOf(k: MetricKey) {
       （{{ AQ_LABEL.join(' / ') }}）
     </p>
     <p v-else class="ts-tip">
-      采样间隔约 1–5 分钟，曲线最多保留 7 天
+      历史数据最多保留 7 天
     </p>
   </section>
 </template>

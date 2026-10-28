@@ -122,7 +122,7 @@ const groups = computed<SpecGroup[]>(() => {
       <div class="body">
         <div v-if="loading" class="loading">
           <span class="spinner" />
-          正在读取设备规格…
+          正在读取设备信息…
         </div>
 
         <template v-else-if="spec">
@@ -339,7 +339,7 @@ const groups = computed<SpecGroup[]>(() => {
           </template>
         </template>
 
-        <div v-else class="empty">未取到该设备的规格信息</div>
+        <div v-else class="empty">暂时读不到这台设备的信息</div>
       </div>
     </aside>
   </div>

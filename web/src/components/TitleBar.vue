@@ -140,7 +140,7 @@ onUnmounted(() => {
           <rect x="6.5" y="6.5" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8" />
         </svg>
       </button>
-      <button class="win-btn danger" title="关闭（隐藏到托盘继续在后台采样）" @click="host.close()">
+      <button class="win-btn danger" title="关闭（隐藏到托盘，程序继续运行）" @click="host.close()">
         <svg width="16" height="16" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
       </button>
     </div>

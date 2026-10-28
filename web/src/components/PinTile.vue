@@ -311,7 +311,7 @@ const spark = computed<{ d: string[]; lastX: number; lastY: number; ticks: strin
     </div>
 
     <!-- 底部趋势曲线：两种样式都有，没有历史就不占位 -->
-    <div v-if="spark" class="pin-spark" :title="`最近 ${SPARK_HOURS} 小时走势（${points.length} 个采样点）`">
+    <div v-if="spark" class="pin-spark" :title="`最近 ${SPARK_HOURS} 小时走势`">
       <svg class="ps-curve" :viewBox="`0 0 100 ${SPARK_H}`" preserveAspectRatio="none" aria-hidden="true">
         <path
           v-for="(d, i) in spark.d"
@@ -339,7 +339,7 @@ const spark = computed<{ d: string[]; lastX: number; lastY: number; ticks: strin
         <span v-for="(t, i) in spark.ticks" :key="i" :class="`t${i}`">{{ t }}</span>
       </div>
     </div>
-    <span v-else class="ps-empty">近 {{ SPARK_HOURS }} 小时无采样</span>
+    <span v-else class="ps-empty">近 {{ SPARK_HOURS }} 小时暂无数据</span>
 
     <footer class="pin-foot">
       <span class="pin-note" :style="{ '--c': color }">{{ note }}</span>

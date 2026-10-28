@@ -317,7 +317,7 @@ async function runBackfill() {
   try {
     await ensureSpecs()
     const n = await backfillCloud(envSeriesOf(homeDevices.value, specs))
-    if (n > 0) flash(`已从云端补齐 ${BACKFILL_HOURS} 小时环境历史`)
+    if (n > 0) flash(`已载入最近 ${BACKFILL_HOURS} 小时环境记录`)
   } catch {
     // 回填失败不影响主功能，本机采样照常继续
   }
@@ -1765,7 +1765,7 @@ onUnmounted(() => {
             />
           </div>
           <p class="resume-tip">
-            {{ autostart ? '已开机自启，静默在托盘记录' : '开启后开机自动后台记录' }}
+            {{ autostart ? '已开机自启，启动后静默驻留托盘' : '开启后开机自动启动' }}
           </p>
         </div>
 
@@ -1835,7 +1835,6 @@ onUnmounted(() => {
           <div v-for="s in homeScenes" :key="s.scene_id" class="card scene-card">
             <div>
               <div class="scene-name">{{ s.name }}</div>
-              <div class="scene-sub">{{ s.home_id }}</div>
             </div>
             <button class="btn btn-primary" :disabled="sceneBusy === s.scene_id" @click="runScene(s)">
               执行
@@ -2364,12 +2363,6 @@ h1 {
 .scene-name {
   font-weight: 600;
   font-size: 14.5px;
-}
-
-.scene-sub {
-  margin-top: 3px;
-  font-size: 11.5px;
-  color: var(--text-3);
 }
 
 /* ---------- 环境页 ---------- */

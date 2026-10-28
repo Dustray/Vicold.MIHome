@@ -245,14 +245,14 @@ const indoorHint = computed(() => {
   const env = roomEnv.value
   if (roomTemp.value !== undefined) {
     const n = env?.count ?? 0
-    const stale = env?.stale ? '（传感器离线，为最后上报值）' : ''
+    const stale = env?.stale ? '（传感器离线，显示最后读数）' : ''
     const vent = indoor.value === undefined ? '' : `，空调回风口 ${indoor.value}°C`
     return `${env?.name || '房间'}温湿度传感器读数${stale}，共 ${n} 个${vent}`
   }
   if (indoor.value !== undefined) {
-    return '该房间没有可读的温湿度传感器，这里显示的是空调回风口温度'
+    return '这个房间没有温湿度传感器，这里显示的是空调回风口温度'
   }
-  return '空调未上报环境温度，该房间也没有可读的温湿度传感器'
+  return '空调没有环境温度，这个房间也没有温湿度传感器'
 })
 
 /** 湿度只有房间探头能给，空调规格里没有 */

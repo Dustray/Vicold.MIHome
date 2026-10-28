@@ -471,7 +471,7 @@ const restGroups = computed<SpecGroup[]>(() => {
       </div>
     </details>
 
-    <p class="hint">读数由设备主动上报，可点右上角刷新重新读取</p>
+    <p class="hint">点右上角刷新可重新读取</p>
   </div>
 </template>
 

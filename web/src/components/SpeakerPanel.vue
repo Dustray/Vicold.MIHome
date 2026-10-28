@@ -569,7 +569,7 @@ const shownVolText = computed(() =>
     </details>
 
     <p class="hint">
-      {{ volProp ? `音量范围 ${volMin}–${volMax}` : '该设备未提供音量控制' }}，状态由设备主动上报
+      {{ volProp ? `音量范围 ${volMin}–${volMax}` : '该设备未提供音量控制' }}
     </p>
   </div>
 </template>

@@ -790,7 +790,7 @@ void AppWindow::apply_tray_balloon() {
     n.uFlags |= NIF_INFO;
     wcscpy_s(n.szInfoTitle, L"仍在后台运行");
     wcscpy_s(n.szInfo,
-             L"窗口已隐藏到托盘，环境读数会继续采样记录（历史曲线才能攒满 24 小时）。"
+             L"窗口已隐藏到托盘，程序继续在后台运行，温湿度等读数会照常更新。"
              L"左键点击托盘图标可唤回主界面，右键菜单里有「退出」。");
     n.dwInfoFlags = NIIF_INFO | NIIF_RESPECT_QUIET_TIME;
     Shell_NotifyIconW(NIM_MODIFY, &n);
@@ -874,8 +874,8 @@ void AppWindow::init_webview() {
 
     if (!std::filesystem::exists(std::filesystem::path(web_root_) / L"index.html")) {
         MessageBoxW(hwnd_,
-                    L"未找到前端产物：<exe 目录>\\web\\dist\\index.html\n\n"
-                    L"请先执行 npm run build（或运行 build.ps1）。",
+                    L"没有找到界面文件（<exe 目录>\\web\\dist）。\n\n"
+                    L"请确认安装包完整解压；如果是自行构建的版本，先运行 build.cmd 再启动。",
                     kTitle, MB_ICONERROR | MB_OK);
     }
 

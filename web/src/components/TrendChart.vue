@@ -312,17 +312,16 @@ const axis = computed(() => {
 
 /**
  * 数据覆盖度提示。
- * 历史库是本机采样攒出来的（云端设备历史接口读不到），
- * 刚装上时只有几分钟数据 —— 说清楚"从什么时候开始有的"，比让人误读曲线更有用。
+ * 只有在「这个时间窗里的记录没能从头到尾都有」时才说一句，免得用户把半截曲线
+ * 当成一整天的真实走势；数据齐全就不打扰，也不要在界面上摆采样率之类的内部数字。
  */
 const coverage = computed(() => {
   if (props.hours <= 0) return ''
-  if (!pts.value.length) return '暂无采样'
+  if (!pts.value.length) return '暂无数据'
   const first = Math.min(...pts.value.map((p) => p.t))
   const b = timeDomain.value[1]
-  const h = (b - first) / 3600
-  if (h >= props.hours - 0.1) return `已覆盖 ${props.hours}h`
-  return `数据自 ${fmtClock(first)} 起（${h.toFixed(1)}h / ${props.hours}h）`
+  if ((b - first) / 3600 >= props.hours - 0.1) return ''
+  return `从 ${fmtClock(first)} 开始有记录`
 })
 
 function fmt(v: number) {
