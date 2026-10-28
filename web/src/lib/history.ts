@@ -208,3 +208,27 @@ export function series(did: string, key: string, hours = 24): Pt[] {
   const out = list.filter((p) => p.t >= from)
   return out.length ? out : list.slice(-2)
 }
+
+/**
+ * 按时间桶取平均抽稀：保留首尾，桶内做均值，空洞桶自然跳过。
+ *
+ * 迷你曲线（卡片、钉子板）共用这一个口径：云端回填约 37 秒一个点，
+ * 24 小时就是 2000+ 个点，全画进一百来像素宽的区域只有一坨毛刺
+ * （整数上报的温度还会变成楼梯块）。压到一两百点，形状不变、毛刺没了。
+ */
+export function bucketAverage(pts: Pt[], target: number): Pt[] {
+  const t0 = pts[0].t
+  const step = Math.max((pts[pts.length - 1].t - t0) / target, 1)
+  const buckets = new Map<number, { ts: number; sum: number; n: number }>()
+  for (const p of pts) {
+    const b = Math.floor((p.t - t0) / step)
+    const cur = buckets.get(b) || { ts: 0, sum: 0, n: 0 }
+    cur.ts += p.t
+    cur.sum += p.v
+    cur.n += 1
+    buckets.set(b, cur)
+  }
+  return [...buckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, c]) => ({ t: Math.round(c.ts / c.n), v: c.sum / c.n }))
+}

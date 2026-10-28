@@ -11,7 +11,7 @@
  */
 import { computed } from 'vue'
 import ArcGauge from './ArcGauge.vue'
-import type { Pt } from '../lib/history'
+import { bucketAverage, type Pt } from '../lib/history'
 import type { PinStyle } from '../lib/sensorPins'
 
 const props = withDefaults(
@@ -142,24 +142,6 @@ const SPARK_HOURS = 24
  * 云端回填（约 37 秒一个点）24 小时能给 2000+ 点，画出来全是竖毛刺。
  */
 const SPARK_MAX_POINTS = 180
-
-/** 按时间桶取平均抽稀：保留首尾，桶内做均值，空洞桶自然跳过 */
-function bucketAverage(pts: Pt[], target: number): Pt[] {
-  const t0 = pts[0].t
-  const step = Math.max((pts[pts.length - 1].t - t0) / target, 1)
-  const buckets = new Map<number, { ts: number; sum: number; n: number }>()
-  for (const p of pts) {
-    const b = Math.floor((p.t - t0) / step)
-    const cur = buckets.get(b) || { ts: 0, sum: 0, n: 0 }
-    cur.ts += p.t
-    cur.sum += p.v
-    cur.n += 1
-    buckets.set(b, cur)
-  }
-  return [...buckets.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([, c]) => ({ t: Math.round(c.ts / c.n), v: c.sum / c.n }))
-}
 
 /**
  * 时间刻度文案。
