@@ -575,6 +575,13 @@ LRESULT AppWindow::handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_ENTERSIZEMOVE:
             return 0;
         case WM_EXITSIZEMOVE:
+            // 用户刚拖完边框或拖动完标题栏：立刻把几何落盘。
+            //
+            // 只在关窗口时保存的话，任何「没走到 WM_CLOSE / WM_DESTROY 的退出」
+            // 都会把这次改的大小丢掉 —— 被任务管理器结束、被 kill、崩溃，
+            // 表现就是「位置记住了、大小没记住」（尺寸还是上次那份旧值）。
+            // EXITSIZEMOVE 是拖拽结束的唯一可靠时机，改完就写，谁也丢不了。
+            save_settings();
             return 0;
         case WM_SIZING:
             return TRUE;
@@ -633,9 +640,8 @@ LRESULT AppWindow::handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_CLOSE:
             // 关闭按钮：按设置最小化到托盘（后台继续采样），否则真退出。
-            // 两种走法都要先把窗口几何记下来 —— 存到托盘那一路后面不会再走
-            // WM_DESTROY，程序是被任务管理器/关机结束的话就永远没机会存了
-            capture_window_geometry();
+            // 两条走法都先存一次 —— 进托盘那一路后面不会再走 WM_DESTROY
+            // （save_settings 内部会先抓几何，这里不用再单独 capture）
             save_settings();
             if (close_to_tray_) {
                 hide_to_tray();
@@ -671,7 +677,6 @@ LRESULT AppWindow::handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_DESTROY:
             // 从托盘菜单「退出」、或者系统关机走的都是这一条，最后再存一次
-            capture_window_geometry();
             save_settings();
             destroy_tray();
             stop_worker();
@@ -934,6 +939,13 @@ void AppWindow::load_settings() {
 }
 
 void AppWindow::save_settings() {
+    // 保存前先抓一次当前几何。
+    //
+    // 之前是靠调用方各自记得先 capture 再 save，结果「设置页切托盘开关」
+    // 那条路（`app.closeToTray`）只调了 save_settings，写进去的是**启动时读到
+    // 的旧矩形**：用户改完窗口大小再去切一下开关，刚改的大小就被旧值覆盖了。
+    // 收口到这里，任何一条保存路径写出去的都是最新的窗口尺寸。
+    capture_window_geometry();
     json j;
     j["closeToTray"] = close_to_tray_;
     if (win_rect_ok_) {
