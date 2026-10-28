@@ -236,11 +236,19 @@ const bandRect = computed(() => {
   return { y: yTop, h }
 })
 
+/**
+ * 横向网格 + Y 轴刻度标签。
+ *
+ * ⚠️ 位置和标签必须用**同一个**插值方向：`y()` 把大值映射到上面（y 越小），
+ * 所以 r=0 那条线在最下面，标签也必须是 min。这里曾经写成
+ * `label: s.max - (s.max - s.min) * r` —— 位置从下往上、标签从大到小，
+ * 温度就变成「上面低、下面高」，跟曲线画反了（曲线本身是对的）。
+ */
 const gridLines = computed(() => {
   const s = scale.value
   return [0, 0.5, 1].map((r) => ({
     y: s.y(s.min + (s.max - s.min) * r),
-    label: fmt(s.max - (s.max - s.min) * r)
+    label: fmt(s.min + (s.max - s.min) * r)
   }))
 })
 
