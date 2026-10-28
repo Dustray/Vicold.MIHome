@@ -113,8 +113,7 @@ const DIAL_META: DialMeta[] = [
   { key: 'pm10', label: 'PM10', decimals: 0, unit: '' },
   { key: 'hcho', label: '甲醛', decimals: 3, unit: '' },
   { key: 'tvoc', label: 'TVOC', decimals: 3, unit: '' },
-  { key: 'co2', label: 'CO₂', decimals: 0, unit: 'ppm' },
-  { key: 'aq', label: '空气质量', decimals: 0, unit: '级' }
+  { key: 'co2', label: 'CO₂', decimals: 0, unit: 'ppm' }
 ]
 
 const DIALS: DialDef[] = DIAL_META.map((m) => ({
@@ -162,6 +161,25 @@ const summary = computed(() => {
   }
 })
 
+/**
+ * 全屋到底有没有空气档位。
+ *
+ * 房间的综合等级在没数据时会被算成 0（= 优），所以只要有一个房间真的报过
+ * 污染物/档位，标题才敢写「优/良」；一个都没有就写「无读数」，
+ * 否则没装空气质量传感器的人一进环境页就看到一个假的「优」。
+ */
+const hasAir = computed(() =>
+  props.rooms.some(
+    (r) =>
+      r.aq !== undefined ||
+      r.pm25 !== undefined ||
+      r.pm10 !== undefined ||
+      r.hcho !== undefined ||
+      r.tvoc !== undefined ||
+      r.co2 !== undefined
+  )
+)
+
 /** 每个表盘要显示的值与配色 */
 const dialData = computed(() =>
   DIALS.map((d) => {
@@ -195,7 +213,7 @@ const dialData = computed(() =>
 /** 温湿度走大号弧形表盘 */
 const heroDials = computed(() => dialData.value.filter((d) => d.key === 't' || d.key === 'h'))
 
-/** 污染物 + 空气质量走分段刻度条指标块 */
+/** 污染物走分段刻度条指标块（空气质量是档位，卡片左上角的大字已经写了，不再占一块） */
 const tileDials = computed(() => dialData.value.filter((d) => d.key !== 't' && d.key !== 'h'))
 
 // ---------------------------------------------------------------- 自适应布局
@@ -220,7 +238,7 @@ const layout = computed<Layout>(() => {
   return 'wide'
 })
 
-/** 指标块列数：跟着档位走，保证 6 个指标排成整齐的 2×3 / 3×2 */
+/** 指标块列数：跟着档位走，让 5 个指标排成 2/2/1 或 3/2 的整齐几行 */
 const tileCols = computed(() => {
   if (layout.value === 'stack') return 2
   if (layout.value === 'dual') return 3
@@ -243,7 +261,7 @@ const onlineCount = computed(() =>
   props.rooms.reduce((a, r) => a + r.sensors.filter((s) => s.online).length, 0)
 )
 
-/** 一句人话摘要放在标题下面（空气质量的档位已经在指标块里了，这里不重复） */
+/** 一句人话摘要放在标题下面（空气质量的档位已经是旁边的大字，这里只说温湿度） */
 const digest = computed(() => {
   const t = summary.value.temp
   const h = summary.value.humidity
@@ -539,12 +557,12 @@ function sensorCurve(s: EnvSensor) {
         ref="clusterRef"
         class="cluster card"
         :class="`lay-${layout}`"
-        :style="{ '--tone': LEVEL_COLOR[summary.level] }"
+        :style="{ '--tone': hasAir ? LEVEL_COLOR[summary.level] : '143,160,186' }"
       >
         <div class="cluster-top">
           <div class="ct-main">
             <span class="ct-cap">全屋空气</span>
-            <b class="ct-val">{{ LEVEL_LABEL[summary.level] }}</b>
+            <b class="ct-val">{{ hasAir ? LEVEL_LABEL[summary.level] : '无读数' }}</b>
             <span class="ct-digest">{{ digest }}</span>
           </div>
           <div class="ct-pills">
@@ -1064,6 +1082,11 @@ function sensorCurve(s: EnvSensor) {
   gap: 10px;
   grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr));
   min-width: 0;
+}
+
+/* 5 块指标排到最后一行只剩半行时，让最后一块占满剩下的格子，别留个空洞 */
+.tiles > :last-child:nth-child(odd) {
+  grid-column: span 2;
 }
 
 /* ---------------- 传感器钉子板 ---------------- */
