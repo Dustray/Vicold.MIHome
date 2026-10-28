@@ -6,9 +6,9 @@ import LoginCard from './components/LoginCard.vue'
 import DeviceCard from './components/DeviceCard.vue'
 import DeviceDrawer from './components/DeviceDrawer.vue'
 import EnvironmentView from './components/EnvironmentView.vue'
-import PowerToggle from './components/PowerToggle.vue'
+import SettingsPage from './components/SettingsPage.vue'
 import { invoke, on, host } from './lib/host'
-import { getSettings, setAutostart } from './lib/settings'
+import { getSettings, setAutostart, setCloseToTray } from './lib/settings'
 import { ensureDeviceImages } from './lib/deviceImage'
 import { EDGE_CURSOR, edgeDirAt } from './lib/edgeResize'
 import { channelKeyOf, findOnProp, groupByRoom, isPowerProp, mergeSplitDevices, onPropOfSiid, physicalDid } from './lib/device'
@@ -91,10 +91,19 @@ async function logout() {
  */
 const autostart = ref(false)
 const autostartBusy = ref(false)
+/**
+ * 关闭窗口时最小化到托盘。
+ *
+ * 设置页和托盘右键菜单改的是同一个字段，宿主回读的才算数；
+ * 关掉之后点关闭按钮是真退出，后台采样也跟着停 —— 界面上要把这层说清。
+ */
+const closeToTray = ref(true)
+const closeToTrayBusy = ref(false)
 
 async function loadSettings() {
   const s = await getSettings()
   autostart.value = !!s.autostart
+  closeToTray.value = !!s.closeToTray
 }
 
 async function toggleAutostart() {
@@ -107,6 +116,19 @@ async function toggleAutostart() {
     await loadSettings()
   } finally {
     autostartBusy.value = false
+  }
+}
+
+async function toggleCloseToTray() {
+  if (closeToTrayBusy.value) return
+  closeToTrayBusy.value = true
+  try {
+    closeToTray.value = await setCloseToTray(!closeToTray.value)
+  } catch {
+    // 写失败（settings.json 不可写）就退回真实值
+    await loadSettings()
+  } finally {
+    closeToTrayBusy.value = false
   }
 }
 
@@ -178,7 +200,6 @@ function flash(text: string) {
 // ---------------- 家庭 / 房间 ----------------
 const homeList = ref<Home[]>([])
 const currentHomeId = ref('')
-const showHomeMenu = ref(false)
 
 const currentHome = computed(() => homeList.value.find((h) => h.id === currentHomeId.value) || null)
 
@@ -228,7 +249,6 @@ const roomSorted = computed(() => hasCustomOrder(currentHomeId.value))
 function selectHome(id: string) {
   currentHomeId.value = id
   activeRoom.value = 'all'
-  showHomeMenu.value = false
   localStorage.setItem('vicold.home', id)
 }
 
@@ -1292,8 +1312,18 @@ async function runAction(siid: number, aiid: number, name: string, params?: unkn
 }
 
 // ---------------- 场景 ----------------
-const view = ref<'devices' | 'scenes' | 'env'>('env')
+const view = ref<'devices' | 'scenes' | 'env' | 'settings'>('env')
 const envLoading = ref(false)
+
+/**
+ * 打开设置页（标题栏齿轮按钮）。
+ *
+ * 抽屉先关掉：设置页在抽屉下面，不关的话点齿轮看着像没反应。
+ */
+function openSettings() {
+  closeDrawer()
+  view.value = 'settings'
+}
 
 /**
  * 采集环境读数：温湿度 + PM2.5 / PM10 / 甲醛 / CO₂ / 空气质量。
@@ -1381,6 +1411,7 @@ const currentRoomEnv = computed(() => {
 const toolbarTitle = computed(() => {
   if (view.value === 'env') return '环境'
   if (view.value === 'scenes') return '手动场景'
+  if (view.value === 'settings') return '设置'
   return currentHome.value?.name || '我的设备'
 })
 
@@ -1390,6 +1421,7 @@ const toolbarSubtitle = computed(() => {
     return `${home} · ${envRooms.value.length} 间 · ${envSensorCount.value} 个传感器`
   }
   if (view.value === 'scenes') return `${homeScenes.value.length} 个场景`
+  if (view.value === 'settings') return '改完立即生效，不需要保存'
   return `${filtered.value.length} 台设备 · ${rooms.value.length} 个房间`
 })
 
@@ -1653,8 +1685,15 @@ onUnmounted(() => {
 
 <template>
   <div class="app">
-    <TitleBar :theme="theme" @toggle-theme="toggleTheme" />
-    <div v-if="showHomeMenu" class="menu-mask" @click="showHomeMenu = false" />
+    <TitleBar
+      :theme="theme"
+      :homes="homeList"
+      :home-id="currentHomeId"
+      :settings-open="view === 'settings'"
+      @toggle-theme="toggleTheme"
+      @select-home="selectHome"
+      @open-settings="openSettings"
+    />
 
     <LoginCard
       v-if="!authed"
@@ -1693,91 +1732,47 @@ onUnmounted(() => {
           <template v-if="view === 'scenes'">
             <p class="side-hint">共 {{ homeScenes.length }} 个手动场景</p>
           </template>
-          <template v-else>
-            <div class="home-pick">
-              <button class="home-btn" @click.stop="showHomeMenu = !showHomeMenu">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-                  <path d="M4 11.2 12 4l8 7.2V20H4v-8.8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
-                </svg>
-                <span class="home-name">{{ currentHome?.name || '我的家' }}</span>
-                <svg class="chev" :class="{ open: showHomeMenu }" width="12" height="12" viewBox="0 0 24 24">
-                  <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" />
-                </svg>
-              </button>
-
-              <transition name="pop">
-                <div v-if="showHomeMenu" class="home-menu">
-                  <button
-                    v-for="h in homeList"
-                    :key="h.id"
-                    class="home-item"
-                    :class="{ active: h.id === currentHomeId }"
-                    @click.stop="selectHome(h.id)"
-                  >
-                    <span>{{ h.name }}</span>
-                    <em>{{ h.rooms.length }}</em>
-                  </button>
-                </div>
-              </transition>
-            </div>
-
-            <template v-if="view === 'devices'">
-              <button class="room" :class="{ active: activeRoom === 'all' }" @click="activeRoom = 'all'">
-                <span class="grip ghost" aria-hidden="true" />
-                <span class="room-name">全屋</span><em>{{ homeDevices.length }}</em>
-              </button>
-              <button
-                v-for="room in rooms"
-                :key="room.id"
-                class="room"
-                :class="{
-                  active: activeRoom === room.id,
-                  dragging: roomDragId === room.id,
-                  'drop-target': roomDragOver === room.id
-                }"
-                @click="activeRoom = room.id"
-                @dragover="roomDragOverAt($event, room.id)"
-                @drop="roomDrop($event, room.id)"
+          <p v-else-if="view === 'settings'" class="side-hint">设置是应用级的，对所有家庭生效</p>
+          <template v-else-if="view === 'devices'">
+            <button class="room" :class="{ active: activeRoom === 'all' }" @click="activeRoom = 'all'">
+              <span class="grip ghost" aria-hidden="true" />
+              <span class="room-name">全屋</span><em>{{ homeDevices.length }}</em>
+            </button>
+            <button
+              v-for="room in rooms"
+              :key="room.id"
+              class="room"
+              :class="{
+                active: activeRoom === room.id,
+                dragging: roomDragId === room.id,
+                'drop-target': roomDragOver === room.id
+              }"
+              @click="activeRoom = room.id"
+              @dragover="roomDragOverAt($event, room.id)"
+              @drop="roomDrop($event, room.id)"
+            >
+              <span
+                class="grip"
+                draggable="true"
+                title="拖动调整房间顺序"
+                @dragstart="roomDragStart($event, room.id)"
+                @dragend="roomDragEnd()"
+                @click.stop
               >
-                <span
-                  class="grip"
-                  draggable="true"
-                  title="拖动调整房间顺序"
-                  @dragstart="roomDragStart($event, room.id)"
-                  @dragend="roomDragEnd()"
-                  @click.stop
-                >
-                  <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
-                    <circle cx="2.5" cy="3" r="1.1" /><circle cx="7.5" cy="3" r="1.1" />
-                    <circle cx="2.5" cy="7" r="1.1" /><circle cx="7.5" cy="7" r="1.1" />
-                    <circle cx="2.5" cy="11" r="1.1" /><circle cx="7.5" cy="11" r="1.1" />
-                  </svg>
-                </span>
-                <span class="room-name">{{ room.name }}</span>
-                <em v-if="room.count">{{ room.count }}</em>
-              </button>
-              <button v-if="roomSorted" class="room-reset" @click="resetRoomSort">恢复默认顺序</button>
-            </template>
+                <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
+                  <circle cx="2.5" cy="3" r="1.1" /><circle cx="7.5" cy="3" r="1.1" />
+                  <circle cx="2.5" cy="7" r="1.1" /><circle cx="7.5" cy="7" r="1.1" />
+                  <circle cx="2.5" cy="11" r="1.1" /><circle cx="7.5" cy="11" r="1.1" />
+                </svg>
+              </span>
+              <span class="room-name">{{ room.name }}</span>
+              <em v-if="room.count">{{ room.count }}</em>
+            </button>
+            <button v-if="roomSorted" class="room-reset" @click="resetRoomSort">恢复默认顺序</button>
           </template>
         </div>
 
-        <div class="resume">
-          <div class="resume-head">
-            <span>后台常驻</span>
-            <PowerToggle
-              :model-value="autostart"
-              size="sm"
-              tone="accent"
-              :busy="autostartBusy"
-              label="开机自动启动"
-              @update:model-value="toggleAutostart"
-            />
-          </div>
-          <p class="resume-tip">
-            {{ autostart ? '已开机自启，启动后静默驻留托盘' : '开启后开机自动启动' }}
-          </p>
-        </div>
-
+        <!-- 后台常驻等应用级开关移到设置页了，侧栏只留导航、房间和退出 -->
         <button class="logout" @click="logout">退出登录</button>
       </aside>
 
@@ -1798,7 +1793,8 @@ onUnmounted(() => {
             <button v-if="view === 'env'" class="btn btn-ghost" :disabled="envLoading" @click="loadEnv()">
               {{ envLoading ? '读取中…' : '刷新' }}
             </button>
-            <button v-else class="btn btn-ghost" :disabled="loading" @click="loadDevices()">
+            <!-- 设置页没有「刷新」这个概念，别放一颗点不动的按钮 -->
+            <button v-else-if="view !== 'settings'" class="btn btn-ghost" :disabled="loading" @click="loadDevices()">
               {{ loading ? '刷新中…' : '刷新' }}
             </button>
           </div>
@@ -1845,6 +1841,20 @@ onUnmounted(() => {
             @toggle="toggleEnvControl"
             @adjust="adjustEnvControl"
             @refresh="loadEnv()"
+          />
+        </div>
+
+        <div v-else-if="view === 'settings'" class="settings-wrap">
+          <SettingsPage
+            :theme="theme"
+            :autostart="autostart"
+            :autostart-busy="autostartBusy"
+            :close-to-tray="closeToTray"
+            :close-to-tray-busy="closeToTrayBusy"
+            @set-theme="applyTheme"
+            @toggle-autostart="toggleAutostart"
+            @toggle-close-to-tray="toggleCloseToTray"
+            @notify="flash"
           />
         </div>
 
@@ -1969,117 +1979,6 @@ onUnmounted(() => {
   margin-top: 10px;
 }
 
-.home-pick {
-  position: relative;
-  margin-bottom: 8px;
-}
-
-.home-btn {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 42px;
-  padding: 0 10px;
-  border-radius: 11px;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.18s ease;
-}
-
-.home-btn:hover {
-  border-color: var(--brand);
-  background: var(--surface);
-  box-shadow: var(--ring);
-}
-
-.home-btn .home-name {
-  flex: 1;
-  min-width: 0;
-  text-align: left;
-  font-size: 13.5px;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.chev {
-  color: var(--text-3);
-  transition: transform 0.18s ease;
-}
-
-.chev.open {
-  transform: rotate(180deg);
-}
-
-.home-menu {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + 6px);
-  left: 0;
-  right: 0;
-  padding: 6px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--shadow-md);
-}
-
-.home-item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  height: 34px;
-  padding: 0 10px;
-  border-radius: 8px;
-  color: var(--text-2);
-  font-size: 13px;
-}
-
-.home-item span {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.home-item em {
-  font-style: normal;
-  font-size: 11px;
-  color: var(--text-3);
-}
-
-.home-item:hover {
-  background: var(--surface-3);
-  color: var(--text);
-}
-
-.home-item.active {
-  background: var(--brand-soft);
-  color: var(--brand);
-  font-weight: 500;
-}
-
-.menu-mask {
-  position: absolute;
-  inset: 0;
-  z-index: 25;
-}
-
-.pop-enter-active,
-.pop-leave-active {
-  transition: opacity 0.14s ease, transform 0.14s ease;
-}
-
-.pop-enter-from,
-.pop-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-
 .room {
   position: relative;
   width: 100%;
@@ -2200,35 +2099,7 @@ onUnmounted(() => {
   color: var(--text-3);
 }
 
-/* 后台常驻：开机自启开关。放在「退出登录」上方，属于应用级设置 */
-.resume {
-  margin-top: 10px;
-  padding: 10px 11px 9px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
-}
-
-.resume-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.resume-head > span {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-2);
-}
-
-.resume-tip {
-  margin: 5px 0 0;
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--text-3);
-}
-
+/* 后台常驻等应用级开关在设置页里，这里只留退出登录 */
 .logout {
   margin-top: 8px;
   height: 36px;
@@ -2417,6 +2288,16 @@ h1 {
 .scene-name {
   font-weight: 600;
   font-size: 14.5px;
+}
+
+/* ---------- 设置页 ---------- */
+/* 只占内容区，侧栏保留（随时能切回环境/设备/场景）；
+   滚动和留白交给 SettingsPage 自己，外层只负责撑满高度 */
+.settings-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
 }
 
 /* ---------- 环境页 ---------- */

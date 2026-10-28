@@ -539,6 +539,8 @@ model ──► GET https://home.miot-spec.com/p/<model>   （SSR 页面，300KB
 | `history.append` / `history.list` / `history.clear` | 本地历史库：环境读数时间序列 |
 | `history.backfill` | 从云端 `get_user_device_data` 补一段历史（`{did, cloud_did, key, siid, piid, from, to}` → `{ok, points}`） |
 | `app.settings` / `app.autostart` | 读设置 / 开关开机自启（`{enable}` → `{ok, autostart}`，以回读注册表为准） |
+| `app.closeToTray` | 开关「关闭窗口时最小化到托盘」（`{enable}` → `{ok, closeToTray}`，写 `settings.json`） |
+| `app.info` | 版本号 / 数据目录 / web 根目录（设置页「关于」用） |
 | `image.sync` | 抓设备产品图（`{models:[...]}` → `{images:{model:文件名}, missing:[...]}`），跑在独立线程 |
 | `window.drag/minimize/maximize/close` | 无边框窗口控制（`close` 默认隐藏到托盘） |
 | `window.resize` | 从窗口边缘发起原生缩放，参数 `{dir}` = n/s/e/w/ne/nw/se/sw |
@@ -554,7 +556,7 @@ model ──► GET https://home.miot-spec.com/p/<model>   （SSR 页面，300KB
 窗口隐藏到托盘时网页定时器会被 Chromium 节流，靠这条通道保证后台持续记录。
 
 `autostart.changed`（`{enabled}`）：托盘菜单里改了开机自启后推给前端，
-侧栏「后台常驻」开关据此同步。
+设置页「启动与窗口」的开关据此同步。
 
 ## 数据位置
 
@@ -867,7 +869,7 @@ mousedown@300,20 detail=2
   窗口又弹回来。所以 `hide_to_tray()` 里顺手 `KillTimer(hwnd_, 1)`，定时器回调里
   也再查一次 `IsWindowVisible` 兜底。
 - 开关有两个入口，状态以**宿主回读注册表**为准：
-  - 侧栏底部「后台常驻」卡片（`app.settings` 读、`app.autostart` 写）；
+  - 设置页「启动与窗口」（`app.settings` 读、`app.autostart` 写）；
   - 托盘右键菜单（勾选状态实时反映）。
   任一处改动后宿主推 `autostart.changed`，另一处跟着更新。
 - 写注册表可能被组策略/权限挡住，所以 `app.autostart` 不管成功与否都回读真实状态；
@@ -888,13 +890,44 @@ mousedown@300,20 detail=2
   > 另外 `CreateIconFromResourceEx` 要的是**图像数据**指针（`.ico` 目录里那条
   > `ICONDIRENTRY` 的 offset），不是整个 `.ico` 文件。
 
+## 设置页（标题栏齿轮）
+
+标题栏右侧多了一颗齿轮（`TitleBar.vue` 的 `.win-btn.app-btn`），点开是设置页
+（`SettingsPage.vue`），占内容区、侧栏保留，随时能切回环境 / 设备 / 场景。
+齿轮在有设置页时带选中态（`--brand-soft` 底 + 品牌色图标）。
+
+| 分区 | 内容 | 落到哪 |
+|---|---|---|
+| 外观 | 浅色 / 深色分段选择 | `applyTheme()`，存 localStorage `vicold.theme` |
+| 启动与窗口 | 开机自动启动 | `app.autostart` → `HKCU\...\Run` |
+| 启动与窗口 | 关闭窗口时最小化到托盘 | `app.closeToTray` → `settings.json` |
+| 数据 | 清空历史数据（二次确认） | `history.clear`（空 did = 清整库） |
+| 关于 | 版本、数据目录 | `app.info`（前端不硬编码版本号） |
+
+几个刻意的取舍：
+
+- **家庭选择从侧栏搬到了标题栏**（`.home-pick`），侧栏只留导航 + 房间 + 退出登录。
+  侧栏原本是「家庭名卡片 → 房间列表 → 后台常驻 → 退出」四段，家庭切换本质是
+  全局作用域开关，跟导航同级，放标题栏更顺；顺带把侧栏底部的「后台常驻」卡片
+  并进了设置页，一个开关只留一处。
+- **下拉遮罩走 `<Teleport to="body">`**。标题栏自己是 `z-index: 30` 的层叠上下文，
+  遮罩留在里面（`z-index: 25`）只会盖住标题栏自己的兄弟节点，盖不住下面的内容；
+  挂到 body 上才能「点页面任意处收起」。标题栏里的按钮和下拉框各自 `@mousedown.stop`，
+  否则按下就变成拖窗口。
+- **两个开关的状态放在 `App.vue`**，`SettingsPage` 只接收 props + 抛事件。
+  托盘右键菜单也能改这两项，状态必须只有一份，否则改了一边另一边不动。
+  写完全都**回读宿主真实值**（写注册表可能被组策略挡、写文件可能没权限）。
+- **清空历史用按钮自身二次确认**（点一次变红「再点一次确认」，4 秒未确认自动复位），
+  不弹原生 `MessageBox` —— 系统对话框由 WebView2 之外画出来，会打断窗口焦点与输入法状态。
+  清完顺手把「上次云端回填时间」改成现在，否则下次启动立刻又从云端补回来，等于没清。
+
 ## 当前进度
 
 已实现并实机验证：扫码登录、设备列表（113 条云端条目合并成 77 台物理设备、按房间分组、搜索、
 在线状态、卡片开关状态批量读取；多键面板一台一张卡片、卡片上按路开关）、
 设备规格解析（miot-spec，带磁盘缓存）、属性读取、
 深浅色主题、无边框窗口（标题栏拖动 + 双击最大化/还原 + 最大化态拖动还原跟随 +
-八方向拖边缘缩放）、
+八方向拖边缘缩放）、**设置页**（标题栏齿轮：主题 / 开机自启 / 关闭窗口行为 / 清空历史 / 关于）、
 系统托盘（关闭隐藏到托盘常驻，后台持续采样；可开**开机自启**，`--tray` 静默起机）、环境页（仪表板 + 控制中心两栏，
 含自适应「全屋空气」卡片（大弧表盘 + 分段刻度指标块，按卡片宽度三档换排布）、
 **传感器钉子板**（任意设备读数挑出来钉住，逐条切「仪表指针 / 进度条」，拖动排序且按家庭落库）、

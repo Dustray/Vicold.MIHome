@@ -1,9 +1,33 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { host, on } from '../lib/host'
 
-defineProps<{ theme: 'light' | 'dark' }>()
-const emit = defineEmits<{ (e: 'toggle-theme'): void }>()
+const props = withDefaults(
+  defineProps<{
+    theme: 'light' | 'dark'
+    /** 可选的家庭列表（米家里可能有多个「家」） */
+    homes?: { id: string; name: string; rooms?: unknown[] }[]
+    homeId?: string
+    /** 设置页是否开着，用来给齿轮按钮加选中态 */
+    settingsOpen?: boolean
+  }>(),
+  { homes: () => [], homeId: '', settingsOpen: false }
+)
+
+const emit = defineEmits<{
+  (e: 'toggle-theme'): void
+  (e: 'select-home', id: string): void
+  (e: 'open-settings'): void
+}>()
+
+const currentHome = computed(() => props.homes.find((h) => h.id === props.homeId) || null)
+
+/** 家庭下拉开关；点空白处（遮罩）或选中一项后收起 */
+const menuOpen = ref(false)
+function pickHome(id: string) {
+  menuOpen.value = false
+  if (id !== props.homeId) emit('select-home', id)
+}
 
 /** 当前是否已最大化（由宿主通过 window.state 事件同步） */
 const maximized = ref(false)
@@ -116,9 +140,57 @@ onUnmounted(() => {
       <span class="name">桌面米家</span>
     </div>
 
+    <!-- 家庭选择：从侧栏搬上来，侧栏就只剩导航和房间了 -->
+    <span class="divider" />
+    <div class="home-pick" @mousedown.stop>
+      <button
+        class="home-btn"
+        :class="{ open: menuOpen }"
+        :title="homes.length > 1 ? '切换家庭' : (currentHome?.name || '我的家')"
+        @click.stop="menuOpen = !menuOpen"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+          <path d="M4 11.2 12 4l8 7.2V20H4v-8.8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+        </svg>
+        <span class="home-name">{{ currentHome?.name || '我的家' }}</span>
+        <svg class="chev" :class="{ open: menuOpen }" width="11" height="11" viewBox="0 0 24 24">
+          <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" />
+        </svg>
+      </button>
+
+      <transition name="pop">
+        <div v-if="menuOpen" class="home-menu">
+          <button
+            v-for="h in homes"
+            :key="h.id"
+            class="home-item"
+            :class="{ active: h.id === homeId }"
+            @click.stop="pickHome(h.id)"
+          >
+            <span>{{ h.name }}</span>
+            <em>{{ h.rooms?.length ?? 0 }}</em>
+          </button>
+          <p v-if="!homes.length" class="home-empty">还没有家庭信息</p>
+        </div>
+      </transition>
+    </div>
+
     <div class="spacer" />
 
     <div class="actions" @mousedown.stop>
+      <button
+        class="win-btn app-btn"
+        :class="{ on: settingsOpen }"
+        title="设置"
+        aria-label="设置"
+        @click="emit('open-settings')"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="3.1" stroke="currentColor" stroke-width="1.8" />
+          <path d="M12 3.2v2.1M12 18.7v2.1M20.8 12h-2.1M5.3 12H3.2M18.2 5.8l-1.5 1.5M7.3 16.7l-1.5 1.5M18.2 18.2l-1.5-1.5M7.3 7.3 5.8 5.8"
+            stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
+      </button>
       <button class="win-btn" :title="theme === 'dark' ? '切换到浅色' : '切换到深色'" @click="emit('toggle-theme')">
         <svg v-if="theme === 'dark'" width="16" height="16" viewBox="0 0 24 24" fill="none">
           <circle cx="12" cy="12" r="4.2" stroke="currentColor" stroke-width="1.8" />
@@ -128,6 +200,7 @@ onUnmounted(() => {
           <path d="M20 14.2A8.2 8.2 0 0 1 9.8 4a8.4 8.4 0 1 0 10.2 10.2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
         </svg>
       </button>
+      <span class="divider tight" />
       <button class="win-btn" title="最小化" @click="host.minimize()">
         <svg width="16" height="16" viewBox="0 0 24 24"><path d="M6 12h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
       </button>
@@ -145,6 +218,12 @@ onUnmounted(() => {
       </button>
     </div>
   </header>
+
+  <!-- 点空白处收起家庭下拉。挂到 body 上：标题栏自己是个 z-index:30 的层叠上下文，
+      遮罩留在里面就盖不住下面的内容 -->
+  <Teleport to="body">
+    <div v-if="menuOpen" class="home-mask" @mousedown.stop.prevent @click="menuOpen = false" />
+  </Teleport>
 </template>
 
 <style scoped>
@@ -201,6 +280,138 @@ onUnmounted(() => {
   flex: 1;
 }
 
+/* ---------------------------------------------- 家庭选择 */
+.divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  flex: none;
+}
+
+.divider.tight {
+  height: 16px;
+  margin: 0 2px;
+}
+
+.home-pick {
+  position: relative;
+  flex: none;
+}
+
+.home-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  max-width: 240px;
+  padding: 0 9px 0 10px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  color: var(--text-2);
+  background: transparent;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.home-btn:hover,
+.home-btn.open {
+  background: var(--surface-3);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.home-btn .home-name {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chev {
+  flex: none;
+  color: var(--text-3);
+  transition: transform 0.18s ease;
+}
+
+.chev.open {
+  transform: rotate(180deg);
+}
+
+.home-menu {
+  position: absolute;
+  z-index: 32;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 200px;
+  max-width: 280px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-md);
+}
+
+.home-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.home-item span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.home-item em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.home-item:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.home-item.active {
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-weight: 500;
+}
+
+.home-empty {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* 挂到 body 上的点空白关闭遮罩：压住内容，但低于标题栏（30） */
+.home-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+}
+
+.pop-enter-active,
+.pop-leave-active {
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.pop-enter-from,
+.pop-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
 .actions {
   display: flex;
   align-items: stretch;
@@ -218,6 +429,16 @@ onUnmounted(() => {
 .win-btn:hover {
   background: var(--surface-3);
   color: var(--brand);
+}
+
+/* 设置按钮窄一点，别和三个窗口按钮挤成一排等宽的方块 */
+.win-btn.app-btn {
+  width: 40px;
+}
+
+.win-btn.app-btn.on {
+  color: var(--brand);
+  background: var(--brand-soft);
 }
 
 .win-btn.danger:hover {

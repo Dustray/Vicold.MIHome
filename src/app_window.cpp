@@ -1279,6 +1279,16 @@ AppWindow::json AppWindow::run_command(const std::string& cmd, const json& args)
     if (cmd == "app.settings") {
         return json{{"autostart", autostart_enabled()}, {"closeToTray", close_to_tray_}};
     }
+    // 关闭窗口时最小化到托盘：设置页和托盘右键菜单改的是同一个开关，
+    // 两处都回读真实值，界面不会出现「显示已开但实际没生效」
+    if (cmd == "app.closeToTray") {
+        if (args.contains("enable") && args["enable"].is_boolean()) {
+            close_to_tray_ = args["enable"].get<bool>();
+            save_settings();
+            log_line(std::string("closeToTray -> ") + (close_to_tray_ ? "on" : "off") + " (from ui)");
+        }
+        return json{{"ok", true}, {"closeToTray", close_to_tray_}};
+    }
 
     // ---- 本地历史库：环境读数时间序列，前端画折线图用 ----
     if (cmd == "history.append") {

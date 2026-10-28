@@ -119,6 +119,21 @@ export function clear(did: string): Promise<unknown> {
   return invoke('history.clear', { did })
 }
 
+/**
+ * 清空**全部**本机历史（设置页的「清空历史数据」）。
+ *
+ * did 传空串 —— 宿主侧 `clear` 约定空 did 就是清整库。
+ * 前端的内存副本也要一起清，否则界面上的曲线还在，看着像没清干净。
+ *
+ * 顺手把「上次回填时间」改到现在：刚清完又立刻从云端补一遍，
+ * 那就等于没清。6 小时后再补是合理的（云端本来就存着这些数据）。
+ */
+export async function clearAll(): Promise<void> {
+  for (const did of Object.keys(historyData)) delete historyData[did]
+  localStorage.setItem(BACKFILL_KEY, String(Date.now()))
+  await invoke('history.clear', { did: '' })
+}
+
 // ---------------------------------------------------------------------------
 // 云端回填
 // ---------------------------------------------------------------------------

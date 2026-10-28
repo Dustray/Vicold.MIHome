@@ -27,3 +27,14 @@ export async function setAutostart(enable: boolean): Promise<boolean> {
   const r = await invoke<{ ok: boolean; autostart: boolean }>('app.autostart', { enable })
   return !!r.autostart
 }
+
+/**
+ * 改「关闭窗口时最小化到托盘」。
+ *
+ * 托盘右键菜单也能改这一项，所以同样回读宿主的真实值再写回界面 ——
+ * 两边改的是 settings.json 里同一个字段。
+ */
+export async function setCloseToTray(enable: boolean): Promise<boolean> {
+  const r = await invoke<{ ok: boolean; closeToTray: boolean }>('app.closeToTray', { enable })
+  return !!r.closeToTray
+}
