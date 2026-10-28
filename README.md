@@ -541,6 +541,7 @@ model ──► GET https://home.miot-spec.com/p/<model>   （SSR 页面，300KB
 | `app.settings` / `app.autostart` | 读设置 / 开关开机自启（`{enable}` → `{ok, autostart}`，以回读注册表为准） |
 | `app.closeToTray` | 开关「关闭窗口时最小化到托盘」（`{enable}` → `{ok, closeToTray}`，写 `settings.json`） |
 | `app.info` | 版本号 / 数据目录 / web 根目录（设置页「关于」用） |
+| `app.apiStats` | 本次运行往米家发了多少个请求（`{total, errors, uptimeSec}`，不触发任何网络调用） |
 | `image.sync` | 抓设备产品图（`{models:[...]}` → `{images:{model:文件名}, missing:[...]}`），跑在独立线程 |
 | `window.drag/minimize/maximize/close` | 无边框窗口控制（`close` 默认隐藏到托盘） |
 | `window.resize` | 从窗口边缘发起原生缩放，参数 `{dir}` = n/s/e/w/ne/nw/se/sw |
@@ -568,6 +569,47 @@ model ──► GET https://home.miot-spec.com/p/<model>   （SSR 页面，300KB
 - 设备产品图：`%LOCALAPPDATA%\Vicold.MIHome\img\`（`<model>.png`，`.missing` 记产品库里没有的型号）
 - WebView2 配置：`%LOCALAPPDATA%\Vicold.MIHome\WebView2\`
 - 运行日志：`%LOCALAPPDATA%\Vicold.MIHome\app.log`、抓图耗时 `img.log`
+
+## 云端调用量：计数器和日志
+
+米家接口有频控，被风控过的人第一件事就是想数清楚「这程序到底发了多少请求」。
+计数点只有一个：`Client::request()` 里 `http.post_form()` 那一行 —— 每次真正
+发出去的 POST 记一次，token 失效后的重发**算两次**（对端确实收到了两次，限流看的是这个数）。
+重试、`prop.get` 的 40 条分批、回填的翻页，全都自然落在里面，不需要各处手工调用。
+
+日志（`app.log`）里的两种行：
+
+```
+17:18:44 api calls=9 errors=0 uri=/miotspec/prop/get     # 前 30 个请求逐个记，带接口名
+17:18:44 api calls=15 errors=0 uri=/miotspec/prop/get
+17:19:11 api calls=20 errors=0 uri=/miotspec/prop/get    # 之后每 10 个记一行
+...
+17:22:03 api total=37 errors=0 (run end)                 # 退出时记准确总数
+```
+
+为什么前 30 个要逐个记：启动那几秒是唯一「想知道具体调了哪些接口」的时段。
+稳定运行后 5 分钟才一个请求，逐个记只会把日志刷满，所以退化成每 10 个一行。
+另有一条 `app.apiStats` 命令可随时取当前值（`{total, errors, uptimeSec}`），不产生网络请求。
+
+**实测：从双击到界面上数据全部出来 = 15 次**（约 3 秒，规格 49 份已缓存、云端回填的
+6 小时门控未触发）：
+
+| 次数 | 接口 | 说明 |
+|---|---|---|
+| 1 | `gethome_merged` | 家庭 + 房间 |
+| 2–4 | `home_device_list` | **同一个家庭连查 3 遍**（`homes()` 被重复调用） |
+| 5 | `device_list_page` | 共享设备 |
+| 6 | `gethome_merged` | 又一次 |
+| 7–15 | `prop.get` | 9 批属性读取，见下 |
+
+第 7–15 这 9 次是前端按品类各发一批：语音助手 / 传感器 / 空气 / 灯光 / 空调 /
+净水 / 通断开关各一次，加上 `refreshValues()` 与环境读数（33 个点，一批 40 条上限，
+本身只要 1 次）。**这些批次完全可以合并成一到两次** —— 属性项都是 `(did, siid, piid)`
+三元组，回包也带同样的三元组，合并后按三元组分发即可，能把这 9 次压到 2 次。
+
+稳定期：前 30 分钟每分钟 1 批 `prop.get`，之后每 5 分钟 1 批（`maybeSample()`
+按 `envStartAt` 判断节奏），即 288 次/天；云端回填每 6 小时一轮（`max_pages=4`，
+单轮 66~99 次），合计约 690 次/天。
 
 ## 启动崩溃：`VCRUNTIME140.dll` 访问冲突（已修复）
 

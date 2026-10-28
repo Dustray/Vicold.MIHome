@@ -470,6 +470,12 @@ json Client::request(const std::string& uri, json data) {
             {"Cookie", cookie_header()},
         };
         auto resp = http.post_form(std::string(kApiBase) + uri, body, headers);
+        // 计数点：真实发出去的一次 HTTP POST。重试（token 失效后重发）算两次，
+        // 因为对端确实收到了两次 —— 限流看的是这个数。
+        // 前 30 个逐个记（启动那一段，用来核对「打开程序到出数据发了多少」），
+        // 之后每 10 个一记（稳定运行时 5 分钟才一个，逐个记只会刷满日志）。
+        const long long sent = ++api_total_;
+        if (api_logger_ && (sent <= 30 || sent % 10 == 0)) api_logger_(stats(), uri);
 
         json payload;
         try {
@@ -480,6 +486,7 @@ json Client::request(const std::string& uri, json data) {
             try {
                 payload = json::parse(plain);
             } catch (...) {
+                ++api_errors_;
                 throw ApiError(-1, "云端返回内容无法解析（HTTP " + std::to_string(resp.status) + "）");
             }
         }
@@ -492,6 +499,7 @@ json Client::request(const std::string& uri, json data) {
             refresh_token();
             continue;
         }
+        ++api_errors_;
         throw ApiError(code, payload.value("message", payload.value("desc", "云端返回错误")) +
                                 " [" + uri + "]");
     }

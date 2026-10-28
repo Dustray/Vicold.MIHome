@@ -2,7 +2,9 @@
 // 米家云端协议客户端（纯 C++ 实现，不依赖 mijiaAPI / Python）。
 #pragma once
 
+#include <atomic>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -27,6 +29,18 @@ private:
 struct LoginStart {
     bool refreshed = false;    // 凭据仍有效，无需扫码
     std::string login_url;     // 需要扫码时，前端据此渲染二维码
+};
+
+/**
+ * 云端请求计数。
+ *
+ * 目的是能回答「这程序到底往米家发了多少请求」——限流、被风控、想优化调用量
+ * 时都得先有这个数。计数点只有一个：`request()` 里每次真正发 HTTP 的那一行，
+ * 所以重试（token 失效会重发一次）算两次，这才是真实的请求量。
+ */
+struct ApiStats {
+    long long total = 0;
+    long long errors = 0;
 };
 
 class Client {
@@ -64,6 +78,23 @@ public:
     json scenes();
     void run_scene(const std::string& scene_id, const std::string& home_id, long long owner_uid);
 
+    /** 本次运行的云端请求总数 / 失败数（线程安全，随时可读） */
+    ApiStats stats() const {
+        return ApiStats{api_total_.load(), api_errors_.load()};
+    }
+    /**
+     * 请求计数回调，宿主拿它写日志。
+     *
+     * 触发节奏：**前 30 个请求逐个记**，之后每 10 个一记。
+     * 启动那段（几十个请求挤在几秒内、决定「打开程序发了多少」）需要看清具体调了
+     * 哪些接口；稳定运行后 5 分钟才一个请求，逐个记会把日志刷满，而且没人看。
+     *
+     * 回调在发请求的线程上跑，日志那边是追加写文件，代价可以忽略。
+     */
+    void set_api_logger(std::function<void(const ApiStats&, const std::string& uri)> fn) {
+        api_logger_ = std::move(fn);
+    }
+
 private:
     json request(const std::string& uri, json data);
     json service_login();                 // 尝试用已有凭据换 token
@@ -78,6 +109,11 @@ private:
     std::filesystem::path auth_path_;
     json auth_ = json::object();
     json pending_login_ = json::object();   // begin_login 与 wait_login 之间传递
+
+    // 请求计数（worker 线程 + 可能的并发调用，用原子；mutable 因为 stats() 是 const）
+    mutable std::atomic<long long> api_total_{0};
+    mutable std::atomic<long long> api_errors_{0};
+    std::function<void(const ApiStats&, const std::string&)> api_logger_;
 };
 
 // 工具：把 spec 原始 JSON 展平成前端可直接渲染的属性/动作列表

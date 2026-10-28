@@ -500,6 +500,12 @@ bool AppWindow::create(HINSTANCE instance, int show_cmd) {
     DwmSetWindowAttribute(hwnd_, 33 /*DWMWA_WINDOW_CORNER_PREFERENCE*/, &corner, sizeof(corner));
 
     client_ = std::make_unique<mijia::Client>(data_dir());
+    // 云端请求计数写进 app.log：`api calls=13 errors=0 uri=/miotspec/prop/get`。
+    // 想知道「启动到数据出来发了多少」「每小时多少」时直接 grep 这个前缀。
+    client_->set_api_logger([](const mijia::ApiStats& s, const std::string& uri) {
+        log_line("api calls=" + std::to_string(s.total) + " errors=" + std::to_string(s.errors) +
+                 " uri=" + uri);
+    });
     log_boot("client");
     history_ = std::make_unique<HistoryStore>(data_dir() / L"history.json");
     log_boot("history");
@@ -678,6 +684,12 @@ LRESULT AppWindow::handle(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DESTROY:
             // 从托盘菜单「退出」、或者系统关机走的都是这一条，最后再存一次
             save_settings();
+            // 本次运行一共往米家发了多少请求，收尾记一笔（10 的倍数那条不一定是准数）
+            if (client_) {
+                const auto st = client_->stats();
+                log_line("api total=" + std::to_string(st.total) +
+                         " errors=" + std::to_string(st.errors) + " (run end)");
+            }
             destroy_tray();
             stop_worker();
             PostQuitMessage(0);
@@ -756,27 +768,8 @@ void AppWindow::resize_webview() {
     GetClientRect(hwnd_, &rc);
     controller_->put_Bounds(rc);
     controller_->put_IsVisible(TRUE);
-    RECT bounds{};
-    controller_->get_Bounds(&bounds);
-    struct Ctx {
-        std::string out;
-    } ctx;
-    EnumChildWindows(
-        hwnd_,
-        [](HWND child, LPARAM lp) -> BOOL {
-            auto* c = reinterpret_cast<Ctx*>(lp);
-            RECT r{};
-            GetWindowRect(child, &r);
-            wchar_t cls[64]{};
-            GetClassNameW(child, cls, 64);
-            c->out += " [" + http::utf8_of(cls) + " " + std::to_string(r.right - r.left) + "x" +
-                      std::to_string(r.bottom - r.top) + " vis=" + std::to_string(IsWindowVisible(child)) +
-                      "]";
-            return TRUE;
-        },
-        reinterpret_cast<LPARAM>(&ctx));
-    log_line("bounds=" + std::to_string(bounds.right) + "x" + std::to_string(bounds.bottom) +
-             " children:" + ctx.out);
+    // 注意：这里不要再 log。它跟着每一次 WM_SIZE 跑，拖一下边框就是几百次调用，
+    // 之前往里 dump 子窗口树（EnumChildWindows + 写文件）直接把 app.log 刷满了。
 }
 
 void AppWindow::eval_js(const std::wstring& script) {
@@ -1300,6 +1293,15 @@ AppWindow::json AppWindow::run_command(const std::string& cmd, const json& args)
             log_line(std::string("closeToTray -> ") + (close_to_tray_ ? "on" : "off") + " (from ui)");
         }
         return json{{"ok", true}, {"closeToTray", close_to_tray_}};
+    }
+
+    // 云端请求计数（本次运行累计）。设置页「关于」或排查限流时用；
+    // 日志里每 10 个请求也会自己写一行，这个命令只是方便随时取当前值。
+    if (cmd == "app.apiStats") {
+        const auto st = client_->stats();
+        return json{{"total", st.total},
+                    {"errors", st.errors},
+                    {"uptimeSec", static_cast<long long>(GetTickCount64() / 1000)}};
     }
 
     // ---- 本地历史库：环境读数时间序列，前端画折线图用 ----
