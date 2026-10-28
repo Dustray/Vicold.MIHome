@@ -11,7 +11,7 @@ import { invoke, on, host } from './lib/host'
 import { getSettings, setAutostart } from './lib/settings'
 import { ensureDeviceImages } from './lib/deviceImage'
 import { EDGE_CURSOR, edgeDirAt } from './lib/edgeResize'
-import { channelKeyOf, findOnProp, isPowerProp, mergeSplitDevices, onPropOfSiid, physicalDid } from './lib/device'
+import { channelKeyOf, findOnProp, groupByRoom, isPowerProp, mergeSplitDevices, onPropOfSiid, physicalDid } from './lib/device'
 import { airProps, channelWireless, fishTankProps, isAirConditioner, isAirMonitor, isFishTank, isLight, isSpeaker, isTempHumiditySensor, mainPollutant, propBy, sensorProps, speakerProps, switchChannels, switchForm, type SwitchChannel } from './lib/spec'
 import { valueLabel } from './lib/zh'
 import {
@@ -274,6 +274,12 @@ const filtered = computed(() => {
     return a.name.localeCompare(b.name, 'zh-Hans-CN')
   })
 })
+
+/**
+ * 设备卡片按房间分段，组的先后就是侧栏房间列表的顺序（用户拖过就是拖出来的顺序）。
+ * 排序本身交给 filtered（房间顺序 + 设备名），分组只切段不重排，口径只维护一处。
+ */
+const deviceGroups = computed(() => groupByRoom(filtered.value, rooms.value))
 
 async function loadDevices() {
   loading.value = true
@@ -1795,21 +1801,29 @@ onUnmounted(() => {
           </div>
         </header>
 
-        <div v-if="view === 'devices'" class="grid">
-          <DeviceCard
-            v-for="d in filtered"
-            :key="d.did"
-            :device="d"
-            :power="powers[d.did]"
-            :summary="cardSummary(d)"
-            :keys="cardKeys(d)"
-            :trend="cardTrend(d)"
-            :busy="!!specBusy[d.did]"
-            @open="openDevice(d)"
-            @toggle="togglePower(d)"
-            @toggle-channel="(k) => toggleChannel(d, k)"
-          />
-          <div v-if="!filtered.length && !loading" class="blank">这里还没有设备</div>
+        <div v-if="view === 'devices'" class="dev-scroll">
+          <section v-for="g in deviceGroups" :key="g.id" class="dev-group">
+            <header class="dg-head">
+              <span class="dg-name">{{ g.name }}</span>
+              <span class="dg-count">{{ g.devices.length }} 台</span>
+            </header>
+            <div class="grid">
+              <DeviceCard
+                v-for="d in g.devices"
+                :key="d.did"
+                :device="d"
+                :power="powers[d.did]"
+                :summary="cardSummary(d)"
+                :keys="cardKeys(d)"
+                :trend="cardTrend(d)"
+                :busy="!!specBusy[d.did]"
+                @open="openDevice(d)"
+                @toggle="togglePower(d)"
+                @toggle-channel="(k) => toggleChannel(d, k)"
+              />
+            </div>
+          </section>
+          <div v-if="!deviceGroups.length && !loading" class="blank">这里还没有设备</div>
         </div>
 
         <div v-else-if="view === 'env'" class="env-wrap">
@@ -2317,14 +2331,51 @@ h1 {
   color: var(--text-3);
 }
 
-.grid {
+/* 设备页：外层滚动，里面按房间分段 */
+.dev-scroll {
   flex: 1;
   overflow-y: auto;
+  padding-bottom: 24px;
+}
+
+.dev-group + .dev-group {
+  margin-top: 20px;
+}
+
+/* 房间小标题：名字 + 台数 + 一条拉到底的分隔线 */
+.dg-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 2px 10px;
+}
+
+.dg-head::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.dg-name {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-2);
+  letter-spacing: 0.6px;
+}
+
+.dg-count {
+  font-size: 10.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
   gap: 16px;
-  padding-bottom: 24px;
   align-content: start;
+  min-width: 0;
 }
 
 .grid > * {

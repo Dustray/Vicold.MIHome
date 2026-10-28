@@ -158,3 +158,43 @@ export function channelKeyOf(device: Device, siid?: number): string {
   return device.did
 }
 
+
+/** 设备页的一段：同一个房间里的卡片 */
+export interface RoomGroup {
+  id: string
+  name: string
+  devices: Device[]
+}
+
+/**
+ * 设备按房间分段。
+ *
+ * 组的先后**就是传进来的房间顺序**（侧栏那份用户自己拖过顺序的 `rooms`），
+ * 组内顺序沿用 `list` 原本的顺序（调用方已经按「房间 + 设备名」排过，这里不重排，
+ * 免得两处各排一套口径）。
+ *
+ * 房间 id 在 `rooms` 里认不出来的设备统一落到「未分配」；
+ * `rooms` 里通常已经有这一项（id = `__none__`），没有的话在这里补一段，
+ * 保证一台设备都不会因为分组丢掉。
+ */
+export function groupByRoom(list: Device[], rooms: { id: string; name: string }[]): RoomGroup[] {
+  const known = new Set(rooms.filter((r) => r.id !== '__none__').map((r) => r.id))
+  const bucket = new Map<string, Device[]>()
+  for (const d of list) {
+    const key = known.has(d.room_id) ? d.room_id : '__none__'
+    const arr = bucket.get(key)
+    if (arr) arr.push(d)
+    else bucket.set(key, [d])
+  }
+
+  const groups: RoomGroup[] = rooms.map((r) => ({
+    id: r.id,
+    name: r.name,
+    devices: bucket.get(r.id) ?? []
+  }))
+  const used = new Set(groups.map((g) => g.id))
+  const rest = [...bucket.entries()].filter(([k]) => !used.has(k)).flatMap(([, v]) => v)
+  if (rest.length) groups.push({ id: '__none__', name: '未分配', devices: rest })
+  // 空房间不出段（侧栏照样列着，只是这里没必要占一行）
+  return groups.filter((g) => g.devices.length > 0)
+}
