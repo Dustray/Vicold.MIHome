@@ -11,7 +11,7 @@
  */
 import { computed } from 'vue'
 import ArcGauge from './ArcGauge.vue'
-import { bucketAverage, type Pt } from '../lib/history'
+import { thinToWidth, type Pt } from '../lib/history'
 import type { PinStyle } from '../lib/sensorPins'
 
 const props = withDefaults(
@@ -135,13 +135,6 @@ const SPARK_PAD = 3
 const SPARK_INSET = 1.5
 /** 曲线跨度（小时）：卡片只有一两百像素宽，看的是「一天里怎么变」 */
 const SPARK_HOURS = 24
-/**
- * 曲线上限点数。
- *
- * 卡片宽度约 160px，超过这个数一个像素里就挤了好几个点，
- * 云端回填（约 37 秒一个点）24 小时能给 2000+ 点，画出来全是竖毛刺。
- */
-const SPARK_MAX_POINTS = 180
 
 /**
  * 时间刻度文案。
@@ -167,32 +160,29 @@ const spark = computed<{ d: string[]; lastX: number; lastY: number; ticks: strin
   const t1 = raw[raw.length - 1].t
   const dt = t1 - t0 || 1
 
-  // 云端回填后一条曲线能有 2000+ 点，挤进 100 单位的 viewBox 就是一坨毛刺
-  // （整数上报的温度会变成楼梯块）。按时间桶取平均压到 ~180 点，
-  // 形状不变、毛刺消失。
-  const pts = raw.length > SPARK_MAX_POINTS ? bucketAverage(raw, SPARK_MAX_POINTS) : raw
-  const vs = pts.map((p) => p.v)
+  // 纵轴范围看全部原始点，别让抽稀影响曲线高低
+  const vs = raw.map((p) => p.v)
   const lo = Math.min(...vs)
   const hi = Math.max(...vs)
   const span = hi - lo || 1
   const tx = (t: number) => SPARK_INSET + ((t - t0) / dt) * (100 - SPARK_INSET * 2)
   const vy = (v: number) => SPARK_H - SPARK_PAD - ((v - lo) / span) * (SPARK_H - SPARK_PAD * 2)
 
-  // ⚠️ 断线阈值要用「原始」采样间隔算：抽样之后间隔被桶宽拉大，
+  // ⚠️ 断线阈值要用「原始」采样间隔算：抽稀之后间隔被拉大，
   // 再用它算 cut 会把真断档也连起来。
   const gaps = raw.slice(1).map((p, i) => p.t - raw[i].t).sort((a, b) => a - b)
   const middle = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0
   const cut = Math.max(middle * 5, 30 * 60)
 
-  // 先按时间连续切成若干段
-  const runs: number[][] = []
-  let cur: number[] = [0]
-  for (let i = 1; i < pts.length; i += 1) {
-    if (pts[i].t - pts[i - 1].t > cut) {
+  // 先在原始点上按时间连续切段
+  const runs: Pt[][] = []
+  let cur: Pt[] = [raw[0]]
+  for (let i = 1; i < raw.length; i += 1) {
+    if (raw[i].t - raw[i - 1].t > cut) {
       runs.push(cur)
-      cur = [i]
+      cur = [raw[i]]
     } else {
-      cur.push(i)
+      cur.push(raw[i])
     }
   }
   runs.push(cur)
@@ -203,10 +193,10 @@ const spark = computed<{ d: string[]; lastX: number; lastY: number; ticks: strin
    * ⚠️ 判据不能看「这一段占多少宽度」：24 小时窗口里一段 2 小时的数据也就一成宽，
    * 按宽度判会把它当成碎片接回上一段，于是跨夜的 17 小时空档被一条直线抹平。
    */
-  const isFrag = (r: number[]) =>
-    r.length < 3 || pts[r[r.length - 1]].t - pts[r[0]].t < 20 * 60
+  const isFrag = (r: Pt[]) =>
+    r.length < 3 || r[r.length - 1].t - r[0].t < 20 * 60
 
-  const merged: number[][] = []
+  const merged: Pt[][] = []
   for (const r of runs) {
     // 末尾的碎片接回前一段
     if (merged.length && isFrag(r)) merged[merged.length - 1].push(...r)
@@ -219,11 +209,14 @@ const spark = computed<{ d: string[]; lastX: number; lastY: number; ticks: strin
   }
 
   const d = merged
+    // 画布宽 100 单位，一段数据最多也就占一百来个位置，按它自己的横向跨度
+    // 给预算就够了（云端回填 24 小时有 2000+ 点，多出来的全落在同一列上）
+    .map((r) => thinToWidth(r, tx(r[r.length - 1].t) - tx(r[0].t)))
     .map((r) =>
       r
-        .map((i, k) => {
-          const x = tx(pts[i].t).toFixed(2)
-          const y = vy(pts[i].v).toFixed(2)
+        .map((p, k) => {
+          const x = tx(p.t).toFixed(2)
+          const y = vy(p.v).toFixed(2)
           return `${k === 0 ? 'M' : 'L'}${x},${y}`
         })
         .join(' ')
@@ -231,7 +224,7 @@ const spark = computed<{ d: string[]; lastX: number; lastY: number; ticks: strin
     .filter((s) => s.includes('L'))
 
   if (!d.length) return null
-  const last = pts[pts.length - 1]
+  const last = raw[raw.length - 1]
   return {
     d,
     lastX: tx(last.t),

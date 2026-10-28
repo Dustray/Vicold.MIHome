@@ -210,25 +210,63 @@ export function series(did: string, key: string, hours = 24): Pt[] {
 }
 
 /**
- * 按时间桶取平均抽稀：保留首尾，桶内做均值，空洞桶自然跳过。
+ * 按显示宽度抽稀（LTTB，最大三角形三桶）。
  *
- * 迷你曲线（卡片、钉子板）共用这一个口径：云端回填约 37 秒一个点，
- * 24 小时就是 2000+ 个点，全画进一百来像素宽的区域只有一坨毛刺
- * （整数上报的温度还会变成楼梯块）。压到一两百点，形状不变、毛刺没了。
+ * 所有趋势曲线共用这一个口径：点数压到和这块图的实际像素宽度差不多就够，
+ * 再多一个像素里也挤着好几个点，纯属白画。云端回填约 37 秒一个采样点，
+ * 24 小时能给 2000+ 个，全拼进 path 就是几十 KB 的字符串，窗口一缩放、
+ * 每分钟刷一次都要重算一遍。
+ *
+ * 为什么不是「桶内取平均」：平均会削平尖峰 —— pm2.5 从 1 跳到 72 只持续几分钟，
+ * 平均完就没了。LTTB 是按「与相邻桶的三角形面积最大」挑点，把峰、谷和拐点留住，
+ * 视觉上几乎看不出少了点。
+ *
+ * 调用时机：**先按原始点切段，再对每段各自抽稀**。反过来的话断档两侧的点
+ * 可能被抽掉，切口位置就歪了；段的预算应取该段自己的横向像素跨度。
+ *
+ * @param px 预算点数，通常就是这块图的像素宽度
  */
-export function bucketAverage(pts: Pt[], target: number): Pt[] {
-  const t0 = pts[0].t
-  const step = Math.max((pts[pts.length - 1].t - t0) / target, 1)
-  const buckets = new Map<number, { ts: number; sum: number; n: number }>()
-  for (const p of pts) {
-    const b = Math.floor((p.t - t0) / step)
-    const cur = buckets.get(b) || { ts: 0, sum: 0, n: 0 }
-    cur.ts += p.t
-    cur.sum += p.v
-    cur.n += 1
-    buckets.set(b, cur)
+export function thinToWidth(pts: Pt[], px: number): Pt[] {
+  const n = pts.length
+  const budget = Math.max(2, Math.floor(px))
+  if (n <= budget || n <= 2) return pts
+  if (budget === 2) return [pts[0], pts[n - 1]]
+
+  const out: Pt[] = [pts[0]]
+  const every = (n - 2) / (budget - 2)
+  let a = 0
+  for (let i = 0; i < budget - 2; i += 1) {
+    // 下一个桶的平均点：用它和候选点、上一个保留点围出的面积挑点
+    const avgFrom = Math.floor((i + 1) * every) + 1
+    const avgTo = Math.min(Math.floor((i + 2) * every) + 1, n)
+    let sumT = 0
+    let sumV = 0
+    let cnt = 0
+    for (let j = avgFrom; j < avgTo; j += 1) {
+      sumT += pts[j].t
+      sumV += pts[j].v
+      cnt += 1
+    }
+    const avgT = cnt ? sumT / cnt : pts[n - 1].t
+    const avgV = cnt ? sumV / cnt : pts[n - 1].v
+
+    const from = Math.floor(i * every) + 1
+    const to = Math.min(Math.floor((i + 1) * every) + 1, n)
+    const base = pts[a]
+    let best = from
+    let bestArea = -1
+    for (let j = from; j < to; j += 1) {
+      const area = Math.abs(
+        (base.t - avgT) * (pts[j].v - base.v) - (base.t - pts[j].t) * (avgV - base.v)
+      )
+      if (area > bestArea) {
+        bestArea = area
+        best = j
+      }
+    }
+    out.push(pts[best])
+    a = best
   }
-  return [...buckets.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([, c]) => ({ t: Math.round(c.ts / c.n), v: c.sum / c.n }))
+  out.push(pts[n - 1])
+  return out
 }

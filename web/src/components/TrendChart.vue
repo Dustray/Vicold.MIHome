@@ -14,7 +14,7 @@
  *  - 只有一两个点时也画得出来（画成小折线 + 圆点）。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { nowTs, type Pt } from '../lib/history'
+import { nowTs, thinToWidth, type Pt } from '../lib/history'
 
 const props = withDefaults(
   defineProps<{
@@ -158,9 +158,28 @@ const segments = computed(() => {
   return out
 })
 
+/**
+ * 画之前先按像素宽度抽稀。
+ *
+ * 一条 24 小时的曲线能有 2000+ 个采样点，而这张图横向也就三四百像素，
+ * 多出来的点根本落不进不同的像素列，只会让 path 字符串变成几十 KB，
+ * 窗口一缩放、每分钟刷新都要重新拼一遍。
+ *
+ * 每段的预算取**它自己的横向跨度**（不是整图宽度），这样几段短数据
+ * 不会被抽得只剩折线；段的起点和终点一定会保留，切口不会移位。
+ */
+const drawSegs = computed(() => {
+  const s = scale.value
+  return segments.value.map((sg) => {
+    if (sg.length < 3) return sg
+    const px = s.x(sg[sg.length - 1].t) - s.x(sg[0].t)
+    return thinToWidth(sg, px)
+  })
+})
+
 const linePath = computed(() => {
   const s = scale.value
-  return segments.value
+  return drawSegs.value
     .filter((sg) => sg.length >= 2)
     .map((sg) =>
       sg
@@ -173,7 +192,7 @@ const linePath = computed(() => {
 const areaPath = computed(() => {
   const s = scale.value
   const base = s.y(s.min)
-  return segments.value
+  return drawSegs.value
     .filter((sg) => sg.length >= 2)
     .map((sg) => {
       const first = sg[0]
