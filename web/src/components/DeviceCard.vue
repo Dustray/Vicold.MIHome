@@ -18,8 +18,8 @@ const props = defineProps<{
    * 单路开关 / 插座只有 1 个，非开关品类是空数组。
    */
   keys?: CardKeyView[]
-  /** 迷你趋势线：环境读数设备的历史曲线（最近 24 小时） */
-  trend?: { color: string; points: Pt[] } | null
+  /** 迷你趋势线：环境读数设备的历史曲线（最近 24 小时），label 是画的是哪个要素 */
+  trend?: { color: string; points: Pt[]; label: string } | null
   busy: boolean
 }>()
 const emit = defineEmits<{
@@ -125,7 +125,7 @@ function keyTitle(k: CardKeyView): string {
     </div>
 
     <div v-if="trend && trend.points.length > 1" class="spark-wrap">
-      <SparkLine :points="trend.points" :color="trend.color" />
+      <SparkLine :points="trend.points" :color="trend.color" :label="trend.label" />
     </div>
 
     <!-- 多键面板：每一路一个小胶囊，横排。合并前这里会变成 N 张卡片 -->
@@ -185,10 +185,11 @@ function keyTitle(k: CardKeyView): string {
 </template>
 
 <style scoped>
+/* 曲线要撑满卡片宽度，所以这里不能留左右 padding —— 内边距由曲线自己算 */
 .spark-wrap {
+  width: 100%;
   margin-top: -8px;
   margin-bottom: -6px;
-  padding-left: 2px;
   opacity: 0.9;
 }
 

@@ -909,8 +909,11 @@ function cardKeys(device: Device): CardKeyView[] {
  *
  * 只有能读环境指标的设备才有：优先主污染物（甲醛/PM2.5），其次温度；
  * 少于两个点就不画（一条线说明不了趋势）。
+ * 带上要素名，卡片上那条线下面才好标注「这是温度还是湿度」。
  */
-function cardTrend(device: Device): { color: string; points: { t: number; v: number }[] } | null {
+function cardTrend(
+  device: Device
+): { color: string; points: { t: number; v: number }[]; label: string } | null {
   const spec = specs.get(device.did)
   if (!spec) return null
   const p = envPropsOf(spec)
@@ -926,7 +929,7 @@ function cardTrend(device: Device): { color: string; points: { t: number; v: num
   if (!key) return null
   const points = trendOf(device.did, key, 24)
   if (points.length < 2) return null
-  return { color: METRICS[key].color, points }
+  return { color: METRICS[key].color, points, label: METRICS[key].label }
 }
 
 /**
