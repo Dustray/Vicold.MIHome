@@ -26,10 +26,36 @@ if "%NPM_OK%"=="0" (
   exit /b 1
 )
 
-set "VSDIR=C:\Program Files\Microsoft Visual Studio\18\Community"
+rem ---- Auto-locate Visual Studio 18 (v18.x) ----
+rem Install path varies across machines (Community/Professional/Enterprise, drive letter),
+rem so detect it instead of hardcoding. Prefer vswhere.exe; fall back to scanning roots.
+set "VSDIR="
+set "VSHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSHERE%" (
+  for /f "usebackq tokens=*" %%i in (`"%VSHERE%" -nologo -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+    if not defined VSDIR echo %%i | find /I "Microsoft Visual Studio\18" >nul && set "VSDIR=%%i"
+  )
+)
+if not defined VSDIR (
+  for %%e in (Community Professional Enterprise) do (
+    for %%r in ("%ProgramFiles%\Microsoft Visual Studio\18\%%e" "%ProgramFiles(x86)%\Microsoft Visual Studio\18\%%e") do (
+      if not defined VSDIR if exist "%%~r\VC\Auxiliary\Build\vcvars64.bat" set "VSDIR=%%~r"
+    )
+  )
+)
+if not defined VSDIR (
+  echo [ERROR] Visual Studio 18 / v18.x with "Desktop development with C++" not found.
+  pause
+  exit /b 1
+)
 set "VCVARS=%VSDIR%\VC\Auxiliary\Build\vcvars64.bat"
 set "CMAKE=%VSDIR%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 set "NINJA=%VSDIR%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
+if not exist "%VCVARS%" (
+  echo [ERROR] vcvars64.bat missing under detected VS: %VSDIR%
+  pause
+  exit /b 1
+)
 
 rem Windows SDK headers/libs come from the NuGet SDK packages (no full SDK on this box)
 set "SDK_INC=%ROOT%third_party\winsdk\microsoft.windows.sdk.cpp\c\Include\10.0.26100.0"
