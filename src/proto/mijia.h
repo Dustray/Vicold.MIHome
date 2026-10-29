@@ -65,7 +65,7 @@ public:
     json home_list();                               // 归一化后的家庭 + 房间（含空房间）
     json devices();                                 // 全部设备（自有 + 共享）
     json device_spec(const std::string& spec_type); // miot-spec 规格（带磁盘缓存）
-    json get_props(const json& items);
+    json get_props(const json& items, int datasource = 1);
     // 调试：按 did 扫描一段 siid/piid，用来发现规格里没写、但设备其实支持的通道
     void probe_props(const std::string& did, int siid_max, int piid_max);
     // 云端读数历史（米家 App「历史记录」走的就是这个接口，

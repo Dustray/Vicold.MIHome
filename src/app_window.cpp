@@ -20,6 +20,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <vector>
 
 #pragma comment(lib, "shell32.lib")
@@ -1258,12 +1259,59 @@ AppWindow::json AppWindow::run_command(const std::string& cmd, const json& args)
     }
     if (cmd == "device.spec") return client_->device_spec(args.value("spec_type", ""));
     if (cmd == "prop.get") {
-        // 记一下这一批多少项：接口单次 40 条上限，看日志就知道前端有没有把批次攒满
+        // 实时优先：先 datasource=0 实时读设备（拿真值，曲线才不会出现「假平线」）；
+        // 任一设备离线/休眠导致该条 code!=0，再单独用 datasource=1（云端缓存）补一次。
+        // 这样在线设备走实时、休眠设备走缓存，前端无需改动，只认 code==0 的读数。
         const json items = args.value("items", json::array());
-        auto ret = client_->get_props(items);
-        log_line("prop.get sent=" + std::to_string(items.size()) + " got=" +
-                 std::to_string(ret.is_array() ? ret.size() : 0));
-        return ret;
+        const auto key_of = [](const json& r) {
+            return r.value("did", std::string()) + "|" +
+                   std::to_string(r.value("siid", 0)) + "|" +
+                   std::to_string(r.value("piid", 0));
+        };
+
+        json out = json::array();
+        std::set<std::string> ok_keys;
+
+        // 第一遍：实时读设备
+        json first;
+        try {
+            first = client_->get_props(items, 0);
+        } catch (...) {
+            first = json::array();
+        }
+        if (first.is_array()) {
+            for (auto& row : first) {
+                if (row.value("code", -1) == 0) {
+                    out.push_back(row);
+                    ok_keys.insert(key_of(row));
+                }
+            }
+        }
+
+        // 第二遍：只补第一遍没成功（或整体失败）的条目，走云端缓存
+        json need = json::array();
+        if (items.is_array()) {
+            for (auto& it : items) {
+                if (!ok_keys.count(key_of(it))) need.push_back(it);
+            }
+        }
+        if (!need.empty()) {
+            try {
+                json second = client_->get_props(need, 1);
+                if (second.is_array()) {
+                    for (auto& row : second) {
+                        if (row.value("code", -1) == 0) out.push_back(row);
+                    }
+                }
+            } catch (...) {
+                // 缓存也读不到就当没这个读数（前端只看 code==0）
+            }
+        }
+
+        log_line("prop.get sent=" + std::to_string(items.is_array() ? items.size() : 0) +
+                 " got=" + std::to_string(out.size()) +
+                 " realtime=" + std::to_string(ok_keys.size()));
+        return out;
     }
     if (cmd == "prop.set") {
         return client_->set_prop(args.value("did", ""), args.value("siid", 0), args.value("piid", 0),

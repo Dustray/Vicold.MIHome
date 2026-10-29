@@ -713,10 +713,11 @@ json Client::device_spec(const std::string& spec_type) {
     return flatten_spec(content);
 }
 
-json Client::get_props(const json& items) {
-    // 云端要求 {"params": [...], "datasource": 1}，直接传数组会返回 code -8
+json Client::get_props(const json& items, int datasource) {
+    // 云端要求 {"params": [...], "datasource": x}，直接传数组会返回 code -8。
+    // datasource=0 实时读设备（真值），=1 读云端缓存（设备休眠也能拿到旧值）。
     json params = items.is_array() ? items : json::array({items});
-    return request("/miotspec/prop/get", json{{"params", params}, {"datasource", 1}});
+    return request("/miotspec/prop/get", json{{"params", params}, {"datasource", datasource}});
 }
 
 void Client::probe_props(const std::string& did, int siid_max, int piid_max) {
